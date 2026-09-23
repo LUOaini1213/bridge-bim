@@ -16,6 +16,15 @@ IFC 结构：
     4D：IfcWorkSchedule 下 120 个预制任务、120 个架梁任务、每幅每联的连续段浇筑与体系转换任务；
       架梁任务产出对应的梁（IfcRelAssignsToProduct），体系转换任务消耗临时支座
       （IfcRelAssignsToProcess，拆除），任务间 IfcRelSequence。
+    结构分析（bridge/structure.py 的计算，写成 IFC 结构分析领域的两个 IfcStructuralAnalysisModel）：
+      阶段一「预制梁简支」：每片梁三段 IfcStructuralCurveMember（两端外伸 + 支座间），支座与临时支座是带
+        IfcBoundaryNodeCondition 的 IfcStructuralPointConnection；一期恒载作为荷载工况（梁上线荷载、
+        横隔板集中力），结果组是支座反力。
+      阶段二「体系转换后的连续梁」：每条梁位线 12 段，永久支座为边界条件；荷载工况「拆除临时支座」
+        （ActionSource = PROPPING，反力反向施加）与「二期恒载」；结果组是支座反力标准值组合 Rck。
+      分析杆件与物理构件用 IfcRelAssignsToProduct 关联（预制梁 ↔ 它的分析段、支座 ↔ 它的支承点），
+      梁与支座另挂 BridgeBIM_Structural 属性集（内力设计值、挠度、压应力与利用率）。
+      力的单位是 N、N/m（IfcUnitAssignment 里声明）；属性集里的数值是 kN、kN·m，单位写在属性名里。
 
 GlobalId 由名称经 uuid5 推出、文件头时间戳固定，同一份模型每次导出的 IFC 逐字节相同。
 
@@ -40,6 +49,8 @@ import ifcopenshell.api.pset
 import ifcopenshell.api.root
 import ifcopenshell.api.sequence
 import ifcopenshell.api.spatial
+import ifcopenshell.api.group
+import ifcopenshell.api.structural
 import ifcopenshell.api.unit
 import ifcopenshell.geom
 import ifcopenshell.guid
@@ -50,7 +61,8 @@ sys.path.insert(0, ROOT)
 from bridge import alignment as AL, config as C, schedule as S                    # noqa: E402
 from bridge.model import section_area, support_kind, support_name, support_stations, unit_bounds   # noqa: E402
 from bridge.numcmp import compare                                                  # noqa: E402
-from bridge.pipeline import CLASS_NAMES, COUNT_ITEMS, compute                      # noqa: E402
+from bridge.pipeline import (CLASS_NAMES, COUNT_ITEMS, bearing_force_rows, compute, girder_force_rows,  # noqa: E402
+                             structure)
 
 MODEL_IFC = os.path.join(ROOT, "model", "bridge_bim.ifc")
 NS = uuid.UUID("0c7d2b8e-8e1f-4f5b-a3c4-1b2e9a6d7f31")   # 固定命名空间，GlobalId 可复现
@@ -61,6 +73,7 @@ NAMES = dict(CLASS_NAMES, **COUNT_ITEMS)
 # 构件类别 → (IFC 实体, PredefinedType, ObjectType)
 IFC_CLASS = {
     "girder": ("IfcBeam", "T_BEAM", None),
+    "diaphragm": ("IfcBeam", "DIAPHRAGM", None),
     "wet_joint": ("IfcSlab", "USERDEFINED", "湿接缝"),
     "cantilever": ("IfcSlab", "USERDEFINED", "翼缘现浇段"),
     "continuity": ("IfcBeam", "USERDEFINED", "墩顶现浇连续段"),
@@ -300,8 +313,15 @@ def build_ifc(r):
     project.Description = "%d×%.0f m 预应力混凝土 T 梁，先简支后连续，分 %d 联；左右幅分离" % (
         C.N_SPANS, C.SPAN, len(C.UNITS))
     api.unit.assign_unit(f, units=[api.unit.add_si_unit(f, t) for t in
-                                   ("LENGTHUNIT", "AREAUNIT", "VOLUMEUNIT", "PLANEANGLEUNIT", "MASSUNIT")])
+                                   ("LENGTHUNIT", "AREAUNIT", "VOLUMEUNIT", "PLANEANGLEUNIT", "MASSUNIT",
+                                    "FORCEUNIT")])
+    units = f.by_type("IfcUnitAssignment")[0]
+    si = {u.UnitType: u for u in units.Units}
+    units.Units = list(units.Units) + [api.unit.add_derived_unit(f, "LINEARFORCEUNIT", None,
+                                                                 {si["FORCEUNIT"]: 1, si["LENGTHUNIT"]: -1})]
     model_ctx = api.context.add_context(f, context_type="Model")
+    graph = api.context.add_context(f, context_type="Model", context_identifier="Reference", target_view="GRAPH_VIEW",
+                                    parent=model_ctx)
     body = api.context.add_context(f, context_type="Model", context_identifier="Body", target_view="MODEL_VIEW",
                                    parent=model_ctx)
     al = build_alignment(f)
@@ -399,6 +419,7 @@ def build_ifc(r):
         api.material.assign_material(f, products=by_material[mname], type="IfcMaterial", material=m)
 
     build_schedule(f, r, products)
+    build_structural(f, r, products, bridge, graph)
 
     # 定位最后写：assign_container 会把已有定位改写成相对容器的定位并新建实体，且按集合顺序处理。
     for ent, origin in placements:
@@ -433,6 +454,237 @@ def _duration(td):
     h, rem = divmod(rem, 3600)
     m = rem // 60
     return "P%dDT%dH%dM" % (d, h, m)
+
+
+# ---------------------------------------------------------------------- 结构分析
+def _line_axis(r, L):
+    """梁位线的一维坐标 x → 梁轴（梁顶中心线）上的三维点，再竖向偏移 dz 到截面形心。
+    预制梁段在梁顶弦线上线性插值，连续段在前后两片梁的梁端点之间插值。"""
+    by = r["by_id"]
+    segs = L["segs"]
+    ends = []
+    for i, sg in enumerate(segs):
+        if sg["kind"] == "girder":
+            g = by[sg["eid"]]
+            ends.append((sg["x0"], sg["x1"], g.params["p0"], g.params["p1"]))
+        else:
+            ends.append((sg["x0"], sg["x1"], by[segs[i - 1]["eid"]].params["p1"], by[segs[i + 1]["eid"]].params["p0"]))
+
+    def at(x, dz):
+        for x0, x1, a, b in ends:
+            if x0 - 1e-9 <= x <= x1 + 1e-9:
+                t = (x - x0) / (x1 - x0)
+                return (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), a[2] + t * (b[2] - a[2]) + dz)
+        raise ValueError("x = %.6f 不在梁位线上" % x)
+    return at
+
+
+def build_structural(f, r, products, bridge, ctx):
+    """两个施工阶段的结构分析模型，见模块说明。返回 {名称: 实体}，测试里用。"""
+    api = ifcopenshell.api
+    res = structure(r)
+    origin = f.createIfcLocalPlacement(None, _axis(f))
+    up = _dir(f, (0.0, 0.0, 1.0))
+    out = {}
+
+    def cond(name, x, y, z):
+        """平面梁位线在三维里的约束：竖向 z，横向 y，纵向 x 只在每根梁（每条梁位线）的第一个支承点固定；
+        绕梁轴转动固定（抗扭），两个弯曲转动放开。"""
+        b = [f.createIfcBoolean(v) for v in (x, y, z, True, False, False)]
+        return f.createIfcBoundaryNodeCondition(name, *b)
+
+    bc_fix = cond("固定支承：纵、横、竖向固定，绕梁轴转动固定", True, True, True)
+    bc_slide = cond("活动支承：横、竖向固定，绕梁轴转动固定，纵向放开", False, True, True)
+
+    def topo(kind, items):
+        return f.createIfcProductDefinitionShape(None, None, [f.createIfcTopologyRepresentation(ctx, "Reference", kind, items)])
+
+    def point(name, xyz, condition=None, desc=None):
+        v = f.createIfcVertexPoint(_pt(f, xyz))
+        c = api.root.create_entity(f, ifc_class="IfcStructuralPointConnection", name=name)
+        c.ObjectPlacement, c.Representation, c.AppliedCondition, c.Description = origin, topo("Vertex", [v]), condition, desc
+        out[name] = c
+        return c, v
+
+    def member(name, v0, v1, desc, sec_a, sec_i):
+        m = api.root.create_entity(f, ifc_class="IfcStructuralCurveMember", name=name, predefined_type="RIGID_JOINED_MEMBER")
+        m.ObjectPlacement, m.Representation, m.Axis, m.Description = origin, topo("Edge", [f.createIfcEdge(v0, v1)]), up, desc
+        ps = api.pset.add_pset(f, product=m, name="BridgeBIM_AnalyticalMember")
+        api.pset.edit_pset(f, pset=ps, properties={"SectionArea_m2": float(sec_a), "MomentOfInertia_m4": float(sec_i),
+                                                   "ElasticModulus_kN_m2": float(C.E_C50)})
+        out[name] = m
+        return m
+
+    def connect(m, c):
+        api.structural.add_structural_member_connection(f, relating_structural_member=m, related_structural_connection=c)
+
+    def activity(cls, name, element, rep_items, kind, load, **attrs):
+        a = api.root.create_entity(f, ifc_class=cls, name=name)
+        a.ObjectPlacement, a.Representation, a.AppliedLoad, a.GlobalOrLocal = origin, topo(kind, rep_items), load, "GLOBAL_COORDS"
+        for k_, v_ in attrs.items():
+            setattr(a, k_, v_)
+        rel = api.root.create_entity(f, ifc_class="IfcRelConnectsStructuralActivity")
+        rel.RelatingElement, rel.RelatedStructuralActivity = element, a
+        out[name] = a
+        return a
+
+    def line_load(name, m, w):
+        load = f.createIfcStructuralLoadLinearForce(name, 0.0, 0.0, -w * 1000.0, 0.0, 0.0, 0.0)
+        return activity("IfcStructuralCurveAction", name, m, list(m.Representation.Representations[0].Items), "Edge",
+                        load, PredefinedType="CONST", ProjectedOrTrue="PROJECTED_LENGTH")   # 线荷载按水平投影长度计（计算用的是平面坐标）
+
+    def point_load(name, m, xyz, P):
+        load = f.createIfcStructuralLoadSingleForce(name, 0.0, 0.0, -P * 1000.0, 0.0, 0.0, 0.0)
+        return activity("IfcStructuralPointAction", name, m, [f.createIfcVertexPoint(_pt(f, xyz))], "Vertex", load)
+
+    def reaction(name, c, v, R):
+        load = f.createIfcStructuralLoadSingleForce(name, 0.0, 0.0, R * 1000.0, 0.0, 0.0, 0.0)
+        return activity("IfcStructuralPointReaction", name, c, [v], "Vertex", load)
+
+    def group(name, desc, ptype, action_type, source, purpose=None):
+        g = api.root.create_entity(f, ifc_class="IfcStructuralLoadGroup", name=name, predefined_type=ptype)
+        g.Description, g.ActionType, g.ActionSource, g.Purpose = desc, action_type, source, purpose
+        out[name] = g
+        return g
+
+    def results(name, desc, for_group):
+        g = api.root.create_entity(f, ifc_class="IfcStructuralResultGroup", name=name)
+        g.Description, g.TheoryType, g.ResultForLoadGroup, g.IsLinear = desc, "FIRST_ORDER_THEORY", for_group, True
+        out[name] = g
+        return g
+
+    def model(name, desc, groups, result_groups):
+        m = api.structural.add_structural_analysis_model(f)
+        m.Name, m.Description, m.PredefinedType, m.SharedPlacement = name, desc, "LOADING_3D", origin
+        m.LoadedBy, m.HasResults = groups, result_groups
+        api.structural.assign_to_building(f, structural_analysis_model=m, building=bridge)
+        out[name] = m
+        return m
+
+    links = {}                          # 物理构件 → 分析对象
+
+    def link(eid, obj):
+        links.setdefault(eid, []).append(obj)
+
+    # ------------------------------------------------------------------ 阶段一：预制梁简支
+    g1 = group("一期恒载", "预制梁 + 横隔板 + 湿接缝 + 翼缘现浇段，构件体积 × 26 kN/m³；由简支的预制梁承担",
+               "LOAD_CASE", "PERMANENT_G", "DEAD_LOAD_G")
+    r1 = results("阶段一支座反力", "一期恒载下永久支座（伸缩端）与临时支座（连续端）的反力", g1)
+    items1, acts1, reac1 = [], [], []
+    for x in res["lines"]:
+        L = x["L"]
+        at = _line_axis(r, L)
+        y0 = L["sec"]["y0"]
+        R1 = {b["id"]: b["R_G1"] for b in x["bearings"]}
+        R1.update({t["id"]: t["R_G1"] for t in x["temps"]})
+        for g in L["girders"]:
+            (sa, xa_s), (sb, xb_s) = g["sup"]
+            xs_ = [g["xa"], xa_s, xb_s, g["xb"]]
+            pts = []
+            for j, xv in enumerate(xs_):
+                sid = sa if j == 1 else sb if j == 2 else None
+                c, v = point("S1-%s-P%d" % (g["eid"], j), at(xv, y0), (bc_fix if j == 1 else bc_slide) if sid else None,
+                             sid)
+                pts.append((c, v))
+                items1.append(c)
+                if sid:
+                    link(sid, c)
+                    reac1.append(reaction("R1-%s" % sid, c, v, R1[sid]))
+            for j in range(3):
+                m = member("S1-%s-%d" % (g["eid"], j + 1), pts[j][1], pts[j + 1][1],
+                           ("外伸段" if j != 1 else "支座间") + "，预制截面", L["sec"]["A0"], L["sec"]["I0"])
+                connect(m, pts[j][0])
+                connect(m, pts[j + 1][0])
+                items1.append(m)
+                link(g["eid"], m)
+                acts1.append(line_load("G1-" + m.Name, m, g["w1"]))
+                for q in g["dia"]:
+                    if xs_[j] <= q["x"] < xs_[j + 1] or (j == 2 and q["x"] == xs_[3]):
+                        acts1.append(point_load("D-%s-%s" % (q["eid"], g["eid"]), m, at(q["x"], y0), q["P"]))
+    api.group.assign_group(f, products=acts1, group=g1)
+    api.group.assign_group(f, products=reac1, group=r1)
+    m1 = model("施工阶段一：预制梁简支", "每片预制梁两端支承（伸缩端永久支座、连续端临时支座），承担一期恒载", [g1], [r1])
+    api.structural.assign_structural_analysis_model(f, products=items1, structural_analysis_model=m1)
+
+    # ------------------------------------------------------------------ 阶段二：体系转换后的连续梁
+    cv = group("体系转换：拆除临时支座", "临时支座的阶段一反力反向加到连续梁上", "LOAD_CASE", "PERMANENT_G", "PROPPING")
+    g2 = group("二期恒载", "铺装（沥青 24、调平层 25 kN/m³）+ 护栏（26 kN/m³），每跨五片梁均分", "LOAD_CASE",
+               "PERMANENT_G", "COMPLETION_G1")
+    ck = group("支座反力标准值组合", "Rck = 结构重力（一期 + 体系转换 + 二期 + 连续段自重）+ 汽车荷载（公路-I级，计冲击）；"
+               "汽车荷载按影响线包络，不在这里列作荷载", "LOAD_COMBINATION", "NOTDEFINED", "NOTDEFINED", "支座压应力验算")
+    r2 = results("支座反力 Rck", "永久支座反力标准值组合（含冲击），用于板式橡胶支座压应力验算", ck)
+    items2, acts_cv, acts_g2, reac2 = [], [], [], []
+    for x in res["lines"]:
+        L = x["L"]
+        at = _line_axis(r, L)
+        yc = L["sec"]["yc"]
+        tag = "S2-%s%d-%d" % (L["deck"], L["unit"], L["line"])
+        perm = {round(b["x"], 9): b for b in L["perm"]}
+        keys = sorted({0.0, L["xs"][-1]} | {g["xa"] for g in L["girders"]} | {g["xb"] for g in L["girders"]}
+                      | {b["x"] for b in L["perm"]})
+        pts = []
+        first = min(b["x"] for b in L["perm"])
+        rck = {b["id"]: b["Rck"] for b in x["bearings"]}
+        for j, xv in enumerate(keys):
+            b = perm.get(round(xv, 9))
+            c, v = point("%s-P%02d" % (tag, j), at(xv, yc), (bc_fix if xv == first else bc_slide) if b else None,
+                         b["id"] if b else None)
+            pts.append((c, v))
+            items2.append(c)
+            if b:
+                link(b["id"], c)
+                reac2.append(reaction("RCK-%s" % b["id"], c, v, rck[b["id"]]))
+        mems = []
+        for j in range(len(keys) - 1):
+            xm = (keys[j] + keys[j + 1]) / 2
+            sg = next(sg for sg in L["segs"] if sg["x0"] <= xm <= sg["x1"])
+            joint = sg["kind"] == "joint"
+            m = member("%s-%02d" % (tag, j + 1), pts[j][1], pts[j + 1][1],
+                       ("墩顶现浇连续段，实心截面" if joint else "预制梁 %s，组合截面" % sg["eid"]),
+                       L["sec"]["Aj"] if joint else L["sec"]["A"], L["sec"]["Ij"] if joint else L["sec"]["I"])
+            connect(m, pts[j][0])
+            connect(m, pts[j + 1][0])
+            items2.append(m)
+            mems.append((keys[j], keys[j + 1], m))
+            link(("CS-%s-%s" % (support_name(sg["support"]), L["deck"])) if joint else sg["eid"], m)
+            e = next(e_ for e_ in range(len(L["xs"]) - 1) if L["xs"][e_] <= xm <= L["xs"][e_ + 1])
+            acts_g2.append(line_load("G2-" + m.Name, m, L["w2"][e]))
+        R1 = {t["id"]: t["R_G1"] for t in x["temps"]}
+        for t in L["temps"]:
+            m = next(m_ for a, b, m_ in mems if a <= t["x"] <= b)
+            acts_cv.append(point_load("CV-%s" % t["id"], m, at(t["x"], yc), R1[t["id"]]))
+    api.group.assign_group(f, products=acts_cv, group=cv)
+    api.group.assign_group(f, products=acts_g2, group=g2)
+    api.group.assign_group(f, products=reac2, group=r2)
+    m2 = model("施工阶段二：体系转换后的连续梁", "每条梁位线一联四跨连续梁，永久支座承力；承担体系转换、二期恒载与汽车荷载",
+               [cv, g2, ck], [r2])
+    api.structural.assign_structural_analysis_model(f, products=items2, structural_analysis_model=m2)
+
+    # ------------------------------------------------------------------ 分析对象 ↔ 物理构件、构件上的计算结果
+    for eid in sorted(links):
+        rel = api.root.create_entity(f, ifc_class="IfcRelAssignsToProduct")
+        rel.RelatingProduct, rel.RelatedObjects = products[eid], links[eid]
+    for row in girder_force_rows(r):
+        ps = api.pset.add_pset(f, product=products[row["girder"]], name="BridgeBIM_Structural")
+        api.pset.edit_pset(f, pset=ps, properties={
+            "FirstStageLoad_kN_m": float(row["g1_kN_m"]), "DiaphragmLoad_kN": float(row["diaphragm_kN"]),
+            "MomentFirstStageMax_kNm": float(row["M_G1_max"]), "MomentDeadMax_kNm": float(row["M_G_max"]),
+            "DesignMomentSaggingMax_kNm": float(row["M_ud_pos"]), "DesignMomentHoggingMin_kNm": float(row["M_ud_neg"]),
+            "DesignShearMax_kN": float(row["V_ud_max"]), "LiveDeflection_mm": float(row["deflection_mm"]),
+            "LiveDeflectionLimit_mm": float(row["deflection_limit_mm"]), "DeflectionRatio": float(row["deflection_ratio"])})
+    for row in bearing_force_rows(r):
+        if row["kind"] == "临时支座":
+            props = {"ReactionFirstStage_kN": float(row["R_G1"])}
+        else:
+            props = {"ReactionDead_kN": float(row["R_G"]), "ReactionLiveMax_kN": float(row["R_Q_max"]),
+                     "ReactionLiveMin_kN": float(row["R_Q_min"]), "ImpactFactor": float(row["mu"]),
+                     "Rck_kN": float(row["Rck"]), "ReactionUltimateMin_kN": float(row["R_ud_min"]),
+                     "EffectiveArea_m2": float(row["Ae_m2"]), "MeanPressure_MPa": float(row["sigma_MPa"]),
+                     "PressureLimit_MPa": float(C.SIGMA_C), "Utilisation": float(row["utilisation"]),
+                     "RequiredSize_m": float(row["size_required_m"])}
+        ps = api.pset.add_pset(f, product=products[row["bearing"]], name="BridgeBIM_Structural")
+        api.pset.edit_pset(f, pset=ps, properties=props)
+    return out
 
 
 def build_schedule(f, r, products):
@@ -539,6 +791,9 @@ SET_ATTRS = {
     "IfcPropertySet": ["HasProperties"],
     "IfcElementQuantity": ["Quantities"],
     "IfcShapeRepresentation": ["Items"],
+    "IfcRelAssignsToGroup": ["RelatedObjects"],
+    "IfcRelServicesBuildings": ["RelatedBuildings"],
+    "IfcStructuralAnalysisModel": ["LoadedBy", "HasResults"],
 }
 
 

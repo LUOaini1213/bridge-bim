@@ -198,7 +198,8 @@ def check_perm_bearing_under_joint(els, need=0.05):
         ga, gb = (g[x] for x in b.attrs["girders"])
         before = min(_end_distances(ga, "b"))           # 前一跨梁端面在墩中心线之前多远
         after = min(_end_distances(gb, "a"))
-        m = min(before + s0, after - s0) - b.params["r"]
+        half = b.params["r"] if b.shape == "cyl" else b.params["w"] / 2     # 顺桥向半尺寸
+        m = min(before + s0, after - s0) - half
         if m < worst:
             worst, where = m, b.eid
     return ("连续墩永久支座全在现浇连续段下（距预制梁端 ≥ %.2f m）" % need, worst >= need,

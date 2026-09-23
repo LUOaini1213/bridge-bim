@@ -44,6 +44,7 @@ def outputs():
         "min_beds_zero_wait": best["beds"] if best else None,
         "min_beds_zero_wait_lead": best["lead_days"] if best else None,
     })
+    sm.update(P.structure_summary(r))
     return {
         "alignment_stations.csv": csv_text(P.alignment_rows()),
         "elements.csv": csv_text([{"eid": e.eid, "class": e.cls, "part": e.part, "deck": e.deck,
@@ -59,6 +60,11 @@ def outputs():
         "length_specs.csv": csv_text(specs),
         "yard_daily.csv": csv_text(P.daily_rows(r)),
         "sensitivity.csv": csv_text(sens),
+        "lateral_distribution.csv": csv_text(P.lateral_rows(r)),
+        "girder_lines.csv": csv_text(P.line_rows(r)),
+        "sections.csv": csv_text(P.section_rows(r)),
+        "girder_forces.csv": csv_text(P.girder_force_rows(r)),
+        "bearing_reactions.csv": csv_text(P.bearing_force_rows(r)),
         "checks.json": json.dumps(checks, ensure_ascii=False, indent=1) + "\n",
         "summary.json": json.dumps(sm, ensure_ascii=False, indent=1) + "\n",
     }

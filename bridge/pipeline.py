@@ -3,12 +3,12 @@ import math
 from collections import OrderedDict, defaultdict
 from datetime import timedelta
 
-from . import alignment as AL, config as C, schedule as S, yard as Y
+from . import alignment as AL, config as C, schedule as S, structure as ST, yard as Y
 from .checks import continuity_joints, run_all
 from .model import build, chords, equalize, naive_lengths, support_kind, support_name, support_stations
 
 CLASS_NAMES = OrderedDict([
-    ("girder", "预制 T 梁"), ("wet_joint", "湿接缝"), ("cantilever", "翼缘现浇段"), ("continuity", "墩顶现浇连续段"),
+    ("girder", "预制 T 梁"), ("diaphragm", "横隔板"), ("wet_joint", "湿接缝"), ("cantilever", "翼缘现浇段"), ("continuity", "墩顶现浇连续段"),
     ("pavement", "桥面铺装"), ("barrier", "混凝土护栏"), ("seat", "支座垫石"),
     ("cap", "盖梁"), ("abut_cap", "桥台台帽"), ("backwall", "桥台背墙"), ("column", "墩柱"),
     ("tie", "系梁"), ("pile", "钻孔灌注桩"),
@@ -24,6 +24,133 @@ def compute(n_beds=None, erect_start=None):
     sm = S.summarize(rows, idle)
     return {"els": els, "sup": sup, "rows": rows, "idle": idle, "summary": sm,
             "by_id": {e.eid: e for e in els}, "plan": {r["girder"]: r for r in rows}}
+
+
+def structure(r):
+    """上部结构计算（全桥约 5 s），算一次缓存在 r 里。"""
+    if "struct" not in r:
+        r["struct"] = ST.analyse(r["els"])
+    return r["struct"]
+
+
+def lateral_rows(r):
+    """各梁位的截面特性与荷载横向分布系数（两幅相同）。"""
+    s = structure(r)
+    out = []
+    for k, sec in s["secs"].items():
+        c = s["coef"][k]
+        out.append(OrderedDict([
+            ("pos", k), ("offset_m", "%.2f" % sec["a"]), ("A_precast_m2", "%.4f" % sec["A0"]),
+            ("I_precast_m4", "%.5f" % sec["I0"]), ("A_composite_m2", "%.4f" % sec["A"]), ("I_composite_m4", "%.5f" % sec["I"]),
+            ("IT_m4", "%.5f" % sec["IT"]), ("I_joint_m4", "%.5f" % sec["Ij"]), ("beta", "%.4f" % s["beta"]),
+            ("mc_max", "%.4f" % c["mc_max"]), ("mc_max_lanes", c["mc_max_lanes"]),
+            ("mc_min", "%.4f" % c["mc_min"]), ("mc_min_lanes", c["mc_min_lanes"]),
+            ("m0_max", "%.4f" % c["m0_max"]), ("m0_max_lanes", c["m0_max_lanes"]), ("m0_min", "%.4f" % c["m0_min"]),
+            ("mc_no_torsion", "%.4f" % c["rigid_max"]),
+        ]))
+    return out
+
+
+def line_rows(r):
+    """30 条梁位线：频率、冲击系数、荷载合计、内力与挠度的极值。"""
+    out = []
+    for x in structure(r)["lines"]:
+        L = x["L"]
+        out.append(OrderedDict([
+            ("deck", L["deck"]), ("unit", L["unit"]), ("line", L["line"]), ("spans", "%d–%d" % L["spans_k"]),
+            ("length_m", "%.3f" % L["xs"][-1]), ("elements", len(L["xs"]) - 1), ("L0_max_m", "%.3f" % x["L0"]),
+            ("Pk_kN", "%.2f" % x["Pk"]), ("f1_Hz", "%.4f" % x["f1"]), ("f2_Hz", "%.4f" % x["f2"]),
+            ("mu_pos", "%.4f" % x["mu_pos"]), ("mu_neg", "%.4f" % x["mu_neg"]),
+            ("G1_kN", "%.1f" % x["loads"]["G1"]), ("G2_kN", "%.1f" % x["loads"]["G2"]),
+            ("continuity_kN", "%.1f" % x["loads"]["CS"]), ("Mud_pos_max_kNm", "%.1f" % max(x["Mud_p"])),
+            ("Mud_neg_min_kNm", "%.1f" % min(x["Mud_n"])), ("Vud_max_kN", "%.1f" % max(x["Vud"])),
+            ("deflection_ratio_max", "%.3f" % max(s["w"] / s["limit"] for s in x["spans"])),
+        ]))
+    return out
+
+
+def section_rows(r):
+    """控制截面：每跨正弯矩最大处与每个连续墩墩顶，按施工阶段拆开的恒载弯矩、汽车荷载与组合（kN·m）。"""
+    out = []
+    for x in structure(r)["lines"]:
+        L = x["L"]
+        items = [(L["xs"][s["node_m"]], "跨内正弯矩最大", "第 %d 跨" % s["span"], s["node_m"], True) for s in x["spans"]]
+        items += [(b["x"], "墩顶", support_name(b["support"]), b["node"], False) for b in L["perm"] if b["kind"] == "cont"]
+        for xv, kind, where, j, pos in sorted(items):
+            mq, mu, mud, mfd = ((x["MQp"][j], x["mu_pos"], x["Mud_p"][j], x["Mfd_p"][j]) if pos else
+                                (x["MQn"][j], x["mu_neg"], x["Mud_n"][j], x["Mfd_n"][j]))
+            out.append(OrderedDict([
+                ("deck", L["deck"]), ("unit", L["unit"]), ("line", L["line"]), ("section", kind), ("at", where),
+                ("x_m", "%.3f" % xv), ("M_G1", "%.1f" % x["M1"][j]), ("M_conversion", "%.1f" % x["Mc"][j]),
+                ("M_G2", "%.1f" % x["M2"][j]), ("M_G", "%.1f" % x["MG"][j]), ("M_Q", "%.1f" % mq), ("mu", "%.4f" % mu),
+                ("M_ud", "%.1f" % mud), ("M_fd", "%.1f" % mfd),
+            ]))
+    return out
+
+
+def girder_force_rows(r):
+    """每片预制梁在它自己的长度范围内的内力设计值与所在跨的活载挠度。"""
+    out = []
+    for x in structure(r)["lines"]:
+        L = x["L"]
+        for m, g in enumerate(L["girders"]):
+            ia, ib = g["ia"], g["ib"]
+            rng = range(ia, ib + 1)
+            jp = max(rng, key=lambda j: x["Mud_p"][j])
+            jn = min(rng, key=lambda j: x["Mud_n"][j])
+            v = max([x["VudR"][j] for j in range(ia, ib)] + [x["VudL"][j] for j in range(ia + 1, ib + 1)])
+            s = x["spans"][m]
+            out.append(OrderedDict([
+                ("girder", g["eid"]), ("deck", L["deck"]), ("span", g["span"]), ("pos", L["line"]),
+                ("g1_kN_m", "%.3f" % g["w1"]), ("diaphragm_kN", "%.2f" % sum(q["P"] for q in g["dia"])),
+                ("M_G1_max", "%.1f" % max(x["M1"][j] for j in rng)), ("M_G_max", "%.1f" % max(x["MG"][j] for j in rng)),
+                ("M_ud_pos", "%.1f" % x["Mud_p"][jp]), ("x_pos_m", "%.3f" % (L["xs"][jp] - g["xa"])),
+                ("M_ud_neg", "%.1f" % x["Mud_n"][jn]), ("x_neg_m", "%.3f" % (L["xs"][jn] - g["xa"])),
+                ("V_ud_max", "%.1f" % v), ("deflection_mm", "%.2f" % (s["w"] * 1000)),
+                ("deflection_limit_mm", "%.2f" % (s["limit"] * 1000)), ("deflection_ratio", "%.3f" % (s["w"] / s["limit"])),
+            ]))
+    return sorted(out, key=lambda o: o["girder"])
+
+
+def bearing_force_rows(r):
+    """永久支座反力与压应力验算，临时支座（体系转换前）的反力。单位 kN、m²、MPa。"""
+    size = {e.eid: e.attrs["size"] for e in r["els"] if e.cls == "bearing"}
+    out = []
+    for x in structure(r)["lines"]:
+        L = x["L"]
+        for b in x["bearings"]:
+            out.append(OrderedDict([
+                ("bearing", b["id"]), ("kind", "连续墩" if b["kind"] == "cont" else "伸缩端"),
+                ("support", support_name(b["support"])), ("deck", L["deck"]), ("line", L["line"]), ("size", size[b["id"]]),
+                ("R_G1", "%.1f" % b["R_G1"]), ("R_conversion", "%.1f" % b["R_conv"]), ("R_G2", "%.1f" % b["R_G2"]),
+                ("R_continuity", "%.1f" % b["R_cs"]), ("R_G", "%.1f" % b["R_G"]), ("R_Q_max", "%.1f" % b["R_Qmax"]),
+                ("R_Q_min", "%.1f" % b["R_Qmin"]), ("mu", "%.4f" % x["mu_pos"]), ("Rck", "%.1f" % b["Rck"]),
+                ("R_ud_min", "%.1f" % b["R_ud_min"]), ("Ae_m2", "%.4f" % b["Ae"]), ("sigma_MPa", "%.2f" % b["sigma"]),
+                ("utilisation", "%.3f" % (b["sigma"] / C.SIGMA_C)), ("size_required_m", "%.3f" % b["size_req"]),
+            ]))
+        for t in x["temps"]:
+            out.append(OrderedDict([
+                ("bearing", t["id"]), ("kind", "临时支座"), ("support", support_name(t["support"])), ("deck", L["deck"]),
+                ("line", L["line"]), ("size", ""), ("R_G1", "%.1f" % t["R_G1"]),
+            ] + [(k, "") for k in ("R_conversion", "R_G2", "R_continuity", "R_G", "R_Q_max", "R_Q_min", "mu", "Rck",
+                                   "R_ud_min", "Ae_m2", "sigma_MPa", "utilisation", "size_required_m")]))
+    return sorted(out, key=lambda o: o["bearing"])
+
+
+def structure_summary(r):
+    s = structure(r)
+    ls = s["lines"]
+    bs = [b for x in ls for b in x["bearings"]]
+    return OrderedDict([
+        ("structure_lines", len(ls)), ("f1_min", round(min(x["f1"] for x in ls), 3)),
+        ("f1_max", round(max(x["f1"] for x in ls), 3)), ("mu_pos_min", round(min(x["mu_pos"] for x in ls), 4)),
+        ("mu_pos_max", round(max(x["mu_pos"] for x in ls), 4)), ("Mud_pos_max", round(max(max(x["Mud_p"]) for x in ls), 1)),
+        ("Mud_neg_min", round(min(min(x["Mud_n"]) for x in ls), 1)), ("Vud_max", round(max(max(x["Vud"]) for x in ls), 1)),
+        ("deflection_ratio_max", round(max(sp["w"] / sp["limit"] for x in ls for sp in x["spans"]), 3)),
+        ("bearing_util_end_max", round(max(b["sigma"] for b in bs if b["kind"] == "end") / C.SIGMA_C, 3)),
+        ("bearing_util_cont_max", round(max(b["sigma"] for b in bs if b["kind"] == "cont") / C.SIGMA_C, 3)),
+        ("bearing_R_ud_min", round(min(b["R_ud_min"] for b in bs), 1)),
+    ])
 
 
 def girder_rows(r):
@@ -142,6 +269,11 @@ def element_rows(r):
         extra[row["bearing"]] = row
     for row in temp_rows(r):
         extra[row["support_id"]] = row
+    for row in girder_force_rows(r):
+        extra[row["girder"]].update((k, v) for k, v in row.items() if k not in extra[row["girder"]])
+    for row in bearing_force_rows(r):
+        tgt = extra[row["bearing"]]
+        tgt.update((k, v) for k, v in row.items() if k not in tgt and v != "")
     out = OrderedDict()
     for e in r["els"]:
         row = OrderedDict([("eid", e.eid), ("class", e.cls), ("name", names[e.cls]), ("part", e.part),
@@ -265,4 +397,6 @@ def all_checks(r):
     out = [{"group": "模型", "name": n, "pass": bool(ok), "detail": m} for n, ok, m in run_all(r["els"])]
     heaviest = max(e.volume for e in r["els"] if e.cls == "girder") * C.RC_DENSITY_T
     out += [{"group": "梁场与架梁", "name": n, "pass": bool(ok), "detail": m} for n, ok, m in Y.run_checks(r["summary"], heaviest)]
+    out += [{"group": "上部结构", "name": n, "pass": bool(ok), "detail": m}
+            for n, ok, m in ST.run_checks(structure(r), r["els"])]
     return out

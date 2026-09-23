@@ -489,6 +489,34 @@ def _drop(top, h):
     return [(p[0], p[1], p[2] - h) for p in top]
 
 
+def diaphragm_stations(g1, g2):
+    """一跨里两片相邻梁之间 5 道横隔板的桩号：两道端横隔板在两片梁中较远的梁端再往里
+    BEARING_INSET 处（落在两片梁的范围内、与支座对齐），三道在 1/4、1/2、3/4 跨。"""
+    k = g1.attrs["span"]
+    st = support_stations()
+    sa, sb = st[k - 1], st[k]
+    ha = max(g1.attrs["half_a"], g2.attrs["half_a"]) + C.BEARING_INSET
+    hb = max(g1.attrs["half_b"], g2.attrs["half_b"]) + C.BEARING_INSET
+    return ([(sa + ha, C.END_DIAPHRAGM_T)] + [(sa + f * (sb - sa), C.DIAPHRAGM_T) for f in C.DIAPHRAGM_FRACTIONS]
+            + [(sb - hb, C.END_DIAPHRAGM_T)])
+
+
+def _diaphragm(g1, g2, s, t):
+    """桩号 s 处沿径向的横隔板：右梁 g1 的左腹板面到左梁 g2 的右腹板面，沿梁轴厚 t。"""
+    ends = []
+    for g, lat in ((g1, C.WEB_HALF), (g2, -C.WEB_HALF)):
+        p0, p1, u = g.params["p0"], g.params["p1"], g.params["u"]
+        grade = (p1[2] - p0[2]) / g.attrs["plan_length"]
+        c = _flange_edge_at(p0, p1, s)                 # 梁轴（梁顶中心线）与该径向竖直面的交点
+        nx, ny = -u[1], u[0]
+        ends.append([(c[0] + sg * t / 2 * u[0] + lat * nx, c[1] + sg * t / 2 * u[1] + lat * ny, c[2] + sg * t / 2 * grade)
+                     for sg in (-1.0, 1.0)])
+    (a0, a1), (b0, b1) = ends
+    ring = (a0, a1, b1, b0)                            # 俯视逆时针：沿 g1 前进、折向 g2、沿 g2 后退
+    return prism([(p[0], p[1], p[2] + C.DIAPHRAGM_BOTTOM) for p in ring],
+                 [(p[0], p[1], p[2] + C.DIAPHRAGM_TOP) for p in ring])
+
+
 # ====================================================================== 生成
 def build():
     """生成全部构件。返回 (构件列表, 支承表)。支承表含永久支座（end 伸缩端 / cont 连续墩）
@@ -518,8 +546,16 @@ def build():
                             "kind": "end" if kind == "E" else "temp", "support": s_idx, "deck": d, "line": i,
                             "girders": [g.eid], "xy": q, "top": soffit_z(g, q), "girder": g}
                     on_cap.setdefault((s_idx, d), []).append(item)
-            # ---------------------------------------------------------------- 湿接缝与翼缘现浇段
+            # ---------------------------------------------------------------- 横隔板（沿径向，每跨 5 道）
             u_ = unit_of_span(k)
+            for i in range(1, n_g):
+                g1, g2 = G[(d, k, i)], G[(d, k, i + 1)]
+                for j, (s_d, t_d) in enumerate(diaphragm_stations(g1, g2), 1):
+                    sol = _diaphragm(g1, g2, s_d, t_d)
+                    els.append(Element("D-%s%02d-%d%d" % (d, k, i, j), "diaphragm", "SUP-" + d, d, "mesh",
+                                       {"solids": [sol]}, {"span": k, "unit": u_, "pair": i, "pos": j, "station": s_d,
+                                                           "thickness": t_d}, solid_volume(sol)))
+            # ---------------------------------------------------------------- 湿接缝与翼缘现浇段
             for i in range(1, n_g):
                 g1, g2 = G[(d, k, i)], G[(d, k, i + 1)]
                 top = [corner(g1, "a", IDX_L), corner(g1, "b", IDX_L), corner(g2, "b", IDX_R), corner(g2, "a", IDX_R)]
@@ -673,13 +709,21 @@ def build():
                 els.append(Element(it["seat"], "seat", name, d, "mesh", {"solids": [sol], "w": 2 * w},
                                    {"support": k, "height": it["seat_height"], "bearing": it["id"]},
                                    solid_volume(sol)))
-                bd, bt = (C.BEARING_CONT_D, C.BEARING_CONT_T) if cont else (C.BEARING_D, C.BEARING_T)
-                it["bottom"] = it["top"] - bt
-                it["size"] = "φ%d×%d" % (round(bd * 1000), round(bt * 1000))
-                els.append(Element(it["id"], "bearing", name, d, "cyl",
-                                   {"c": (q[0], q[1], it["bottom"]), "r": bd / 2, "h": bt},
-                                   {"support": k, "girders": it["girders"], "kind": it["kind"], "size": it["size"]},
-                                   math.pi * (bd / 2) ** 2 * bt))
+                attrs = {"support": k, "girders": it["girders"], "kind": it["kind"]}
+                if cont:                                    # 矩形：l 沿支承线（横桥向）、w 顺桥向
+                    ba, bb_, bt = C.BEARING_CONT_A, C.BEARING_CONT_B, C.BEARING_CONT_T
+                    it["bottom"] = it["top"] - bt
+                    it["size"] = attrs["size"] = "%d×%d×%d" % (round(ba * 1000), round(bb_ * 1000), round(bt * 1000))
+                    els.append(Element(it["id"], "bearing", name, d, "box",
+                                       {"c": (q[0], q[1], it["bottom"]), "dir": n, "l": bb_, "w": ba, "h": bt},
+                                       attrs, ba * bb_ * bt))
+                else:
+                    bd, bt = C.BEARING_D, C.BEARING_T
+                    it["bottom"] = it["top"] - bt
+                    it["size"] = attrs["size"] = "φ%d×%d" % (round(bd * 1000), round(bt * 1000))
+                    els.append(Element(it["id"], "bearing", name, d, "cyl",
+                                       {"c": (q[0], q[1], it["bottom"]), "r": bd / 2, "h": bt}, attrs,
+                                       math.pi * (bd / 2) ** 2 * bt))
 
             # 墩柱、桩、系梁（桥台不设墩柱，桩直接接台帽）
             b_mid = (b0 + b1) / 2 if abut else 0.0

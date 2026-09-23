@@ -17,7 +17,7 @@ sys.path.insert(0, ROOT)
 from bridge import alignment as AL, checks as K, config as C, model as M, pipeline as P, yard as Y  # noqa: E402
 
 EXPECTED_COUNTS = {
-    "girder": 120, "wet_joint": 96, "cantilever": 48, "continuity": 18, "pavement": 24, "barrier": 48,
+    "girder": 120, "diaphragm": 480, "wet_joint": 96, "cantilever": 48, "continuity": 18, "pavement": 24, "barrier": 48,
     "expansion_joint": 8, "seat": 150, "bearing": 150, "temp_support": 180, "cap": 22, "abut_cap": 4,
     "backwall": 4, "column": 44, "tie": 22, "pile": 52,
 }

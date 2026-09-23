@@ -10,7 +10,9 @@
 - 图层：路线 / 地形 / 上部结构（预制 T 梁按梁长规格分子层）/ 下部结构 / 梁场 / 分析 / 标注 / 图纸；
   材质挂在图层上（Rhino 8 给每个对象单独指定材质会逐个复制一份，文件大一截）；
 - 图纸层里的两个横断面不是另画的：是用竖直平面剖切模型里的网格与 Brep 得到的截线，
-  再平移到图纸位置、按构件类别填色。
+  再平移到图纸位置、按构件类别填色；
+- 结构计算（bridge/structure.py）的结果回到模型里：预制梁、永久支座的 UserText 带内力与压应力，
+  「分析」层下有按弯矩设计值、支座利用率着色的副本，图纸层里有一条梁位线的弯矩包络图。
 """
 import datetime
 import json
@@ -34,7 +36,8 @@ import Rhino.Geometry as RG                            # noqa: E402
 
 from bridge import alignment as AL, config as C, schedule as S, yard as Y       # noqa: E402
 from bridge.model import frame, project, support_kind, support_name, support_stations, triangulate, unit_bounds  # noqa: E402
-from bridge.pipeline import compute, element_rows, naive_spec_count             # noqa: E402
+from bridge.pipeline import (bearing_force_rows, compute, element_rows, girder_force_rows,  # noqa: E402
+                             naive_spec_count, structure)
 
 LOG = {"started": time.strftime("%Y-%m-%d %H:%M:%S"), "steps": []}
 DOC = Rhino.RhinoDoc.ActiveDoc
@@ -219,6 +222,7 @@ def add_geom(g, a):
 
 STYLE = {
     "girder": ("上部结构::预制T梁", (214, 210, 200)),
+    "diaphragm": ("上部结构::横隔板", (200, 194, 180)),
     "wet_joint": ("上部结构::湿接缝", (196, 192, 182)),
     "cantilever": ("上部结构::翼缘现浇段", (196, 192, 182)),
     "continuity": ("上部结构::墩顶现浇连续段", (170, 176, 196)),
@@ -564,7 +568,7 @@ SECTION_Y = -720.0
 LS = "图纸::横断面"
 SECTIONS = [("P06 墩顶横断面（%s）" % AL.station_label(C.BRIDGE_START + 6 * C.SPAN), C.BRIDGE_START + 6 * C.SPAN, 0.0),
             ("跨中横断面（%s，被交道路处）" % AL.station_label(C.ROAD_STATION), C.ROAD_STATION, 62.0)]
-SECTION_FILL = {"girder": (214, 208, 196), "wet_joint": (176, 170, 160), "cantilever": (176, 170, 160),
+SECTION_FILL = {"girder": (214, 208, 196), "diaphragm": (190, 184, 170), "wet_joint": (176, 170, 160), "cantilever": (176, 170, 160),
                 "continuity": (150, 158, 184), "pavement": (80, 80, 84), "barrier": (196, 194, 188),
                 "cap": (204, 200, 192), "column": (204, 200, 192), "tie": (188, 184, 176), "pile": (174, 156, 132),
                 "seat": (110, 110, 110), "bearing": (20, 20, 20), "temp_support": (240, 130, 20),
@@ -627,7 +631,7 @@ def draw_sections(r):
     cR = dict(C.DECKS)["R"]
     notes = [("墩顶现浇连续段（含横梁），宽 %.2f–%.2f m" % (r["by_id"]["CS-P06-R"].attrs["joint_min"],
                                                      r["by_id"]["CS-P06-R"].attrs["joint_max"]), cap.attrs["top"] + 3.2),
-             ("永久支座 φ550 + 垫石", cap.attrs["top"] + 0.9),
+             ("永久支座 %s + 垫石" % r["by_id"]["B-P06-R1"].attrs["size"], cap.attrs["top"] + 0.9),
              ("盖梁 %.1f×%.1f m，顶面随横坡" % (C.CAP_W, C.CAP_H), cap.attrs["bottom"] + 0.8),
              ("墩柱 φ%.1f m，高 %.2f m" % (C.COLUMN_D, col.attrs["height"]), col.params["c"][2] + col.params["h"] / 2),
              ("系梁 %.1f×%.1f m" % (C.TIE_W, C.TIE_H), r["by_id"]["TB-P06-R"].params["c"][2] + 0.6),
@@ -653,7 +657,9 @@ def draw_sections(r):
          (x1 - a + 1.0, SECTION_Y, (road + soffit) / 2), 0.9, LS, (40, 40, 200), ha="l")
     text("被交道路（宽 %.0f m，与路线正交）" % C.ROAD_WIDTH, (x1 + 8.0, SECTION_Y, AL.ground(s, -8.0) + 1.0), 0.9, LS,
          (40, 40, 200))
-    text("预制 T 梁 ×5 / 幅，梁高 %.1f m；湿接缝 %.2f m" % (C.H_GIRDER, 0.60), (x1, SECTION_Y, soffit - 1.6), 0.9, LS)
+    wj = [w for e in r["els"] if e.cls == "wet_joint" and e.attrs["span"] == 7 for w in (e.attrs["width_a"], e.attrs["width_b"])]
+    text("预制 T 梁 ×5 / 幅，梁高 %.1f m；湿接缝 %.2f–%.2f m" % (C.H_GIRDER, min(wj), max(wj)), (x1, SECTION_Y, soffit - 1.6),
+         0.9, LS)
     step("横断面（模型剖切）：%s" % "，".join("%s 切到 %d 个构件" % kv for kv in n_cut.items()))
 
 
@@ -730,6 +736,131 @@ def draw_length_specs(r):
 def length_specs_bbox():
     z_leg = row_z(len(spec_rows()) - 1) - CELL_H - 6.0
     return (-26.0, SPEC_Y, z_leg - 12.0), (C.N_SPANS * CELL_W + 2.0, SPEC_Y, 2.5 + 24.0)
+
+
+# ------------------------------------------------------------------ 结构计算：弯矩包络图、按内力着色
+FORCES_Y = -1400.0
+LF = "图纸::弯矩包络"
+M_SCALE = 1.0 / 400.0                  # 图上 1 m 代表 400 kN·m
+FORCE_LINE = ("L", 1, 1)               # 画哪条梁位线：左幅第 1 联 1 号梁（边梁）
+M_COLORS = [(255, 255, 178), (254, 217, 118), (254, 178, 76), (253, 141, 60), (240, 59, 32), (189, 0, 38)]
+# 利用率是绝对量：档位固定，0.9 以上才发红；图例只列有支座落进去的档
+U_BINS = [(0.0, 0.6, (26, 152, 80)), (0.6, 0.7, (145, 207, 96)), (0.7, 0.8, (217, 239, 139)),
+          (0.8, 0.9, (253, 174, 97)), (0.9, 1.0, (244, 109, 67)), (1.0, 9.99, (165, 0, 38))]
+
+
+def force_line(r):
+    return next(x for x in structure(r)["lines"] if (x["L"]["deck"], x["L"]["unit"], x["L"]["line"]) == FORCE_LINE)
+
+
+def draw_forces(r):
+    """一条梁位线的弯矩图：阶段一简支（灰）、恒载合计（黑）、基本组合最大 / 最小（红 / 蓝），画在受拉侧。"""
+    x = force_line(r)
+    L = x["L"]
+    xs, y = L["xs"], FORCES_Y
+
+    def curve(vals, rgb, w=None):
+        polyline([(xs[j], y, -vals[j] * M_SCALE) for j in range(len(xs))], LF, rgb, w)
+
+    for sg in L["segs"]:
+        joint = sg["kind"] == "joint"
+        polyline([(sg["x0"], y, 0.0), (sg["x1"], y, 0.0)], LF, (90, 100, 160) if joint else (110, 110, 110),
+                 0.9 if joint else 0.5)
+    for g in L["girders"]:                        # 阶段一：每片梁自己的简支弯矩图
+        polyline([(xs[j], y, -x["M1"][j] * M_SCALE) for j in range(g["ia"], g["ib"] + 1)], LF, (125, 125, 125), 0.35)
+    curve(x["MG"], (0, 0, 0), 0.4)
+    curve(x["Mud_p"], (200, 30, 30), 0.5)
+    curve(x["Mud_n"], (30, 70, 200), 0.5)
+
+    def tri(xv, rgb, closed_fill):
+        h = 1.2
+        crv = [(xv, y, -0.15), (xv - h * 0.6, y, -0.15 - h), (xv + h * 0.6, y, -0.15 - h), (xv, y, -0.15)]
+        if closed_fill:
+            fill(RG.PolylineCurve([RG.Point3d(*q) for q in crv]), LF + "::填充", rgb)
+        polyline(crv, LF, rgb)
+
+    for b in L["perm"]:
+        tri(b["x"], (20, 20, 20), True)
+    for t in L["temps"]:
+        tri(t["x"], (230, 120, 20), False)
+    m_lo = min(x["Mud_n"])
+    for sp in x["spans"]:
+        j = sp["node_m"]
+        text("%.0f" % x["Mud_p"][j], (xs[j], y, -x["Mud_p"][j] * M_SCALE - 1.8), 1.7, LF, (200, 30, 30))
+        a_, b_ = L["spans"][sp["span"] - L["spans_k"][0]]
+        text("第%d跨" % sp["span"], ((a_ + b_) / 2, y, -3.4), 1.6, LF, (90, 90, 90))
+    for b in L["perm"]:
+        if b["kind"] != "cont":
+            continue
+        j = b["node"]
+        text("%.0f" % x["Mud_n"][j], (b["x"], y, -x["Mud_n"][j] * M_SCALE + 1.6), 1.7, LF, (30, 70, 200))
+        text(support_name(b["support"]), (b["x"], y, -3.4), 1.6, LF, (90, 90, 90))
+    first = next(b for b in L["perm"] if b["kind"] == "cont")
+    j = first["node"]
+    sp0 = x["spans"][0]
+    jm = sp0["node_m"]
+    top = -m_lo * M_SCALE + 5.0
+    names = {"L": "左幅", "R": "右幅"}
+    lines_ = [
+        ("%s第 %d 联 %d 号梁（边梁）弯矩包络，kN·m，画在受拉侧" % (names[L["deck"]], L["unit"], L["line"]), 2.3, (0, 0, 0)),
+        ("灰：阶段一预制梁简支　黑：恒载合计　红 / 蓝：基本组合最大 / 最小　▲ 永久支座　△ 临时支座", 1.7, (70, 70, 70)),
+        ("%s 墩顶　恒载 M_G = %.0f（阶段一）%+.0f（体系转换）%+.0f（二期）= %.0f；汽车 M_Q = %.0f，μ = %.3f" % (
+            support_name(first["support"]), x["M1"][j], x["Mc"][j], x["M2"][j], x["MG"][j], x["MQn"][j], x["mu_neg"]),
+         1.7, (30, 70, 200)),
+        ("　　　　基本组合 M_ud = %.1f × [%.1f × (%.0f) + %.1f × %.3f × (%.0f)] = %.0f" % (
+            C.GAMMA_0, C.GAMMA_G, x["MG"][j], C.GAMMA_Q1, 1 + x["mu_neg"], x["MQn"][j], x["Mud_n"][j]), 1.7, (30, 70, 200)),
+        ("第 %d 跨正弯矩最大处　阶段一 %.0f，恒载合计 %.0f，汽车 %.0f（μ = %.3f），M_ud = %.0f" % (
+            sp0["span"], x["M1"][jm], x["MG"][jm], x["MQp"][jm], x["mu_pos"], x["Mud_p"][jm]), 1.7, (200, 30, 30)),
+    ]
+    for i, (ln, h, rgb) in enumerate(lines_):
+        text(ln, (0.0, y, top + 3.4 * (len(lines_) - i)), h, LF, rgb, ha="l")
+    step("弯矩包络图：%s 幅第 %d 联 %d 号梁，%d 个节点" % (L["deck"], L["unit"], L["line"], len(xs)))
+
+
+def forces_bbox(r):
+    x = force_line(r)
+    top = -min(x["Mud_n"]) * M_SCALE + 5.0 + 3.4 * 5 + 2.5
+    return (-3.0, FORCES_Y, -max(x["Mud_p"]) * M_SCALE - 5.0), (x["L"]["xs"][-1] + 3.0, FORCES_Y, top)
+
+
+def bins(values, step, colors):
+    """等宽分档：档宽取 step 的整数倍，档数不超过颜色数。返回 [(下限, 上限, 颜色)]。"""
+    while True:
+        lo = math.floor(min(values) / step + 1e-9) * step
+        hi = math.ceil(max(values) / step - 1e-9) * step
+        n = max(1, int(round((hi - lo) / step)))
+        if n <= len(colors):
+            break
+        step *= 2
+    off = (len(colors) - n) // 2
+    return [(lo + i * step, lo + (i + 1) * step, colors[off + i]) for i in range(n)]
+
+
+def which(v, bs):
+    for lo, hi, rgb in bs:
+        if v <= hi + 1e-9:
+            return lo, hi, rgb
+    return bs[-1]
+
+
+STRUCT_OBJ = {}
+
+
+def draw_structure_colors(r):
+    """「分析」层：预制梁按基本组合正弯矩设计值、永久支座按压应力利用率着色的副本。"""
+    g_rows = {row["girder"]: float(row["M_ud_pos"]) for row in girder_force_rows(r)}
+    b_rows = {row["bearing"]: float(row["utilisation"]) for row in bearing_force_rows(r) if row["kind"] != "临时支座"}
+    mb = bins(list(g_rows.values()), 500.0, M_COLORS)
+    ub = [b_ for b_ in U_BINS if any(b_[0] < v <= b_[1] for v in b_rows.values())]
+    for eid, v in g_rows.items():
+        lo, hi, rgb = which(v, mb)
+        STRUCT_OBJ[eid] = DOC.Objects.AddMesh(GEOM[eid], attrs("分析::弯矩设计值::%.0f–%.0f kN·m" % (lo, hi), rgb, name=eid))
+    for eid, v in b_rows.items():
+        lo, hi, rgb = which(v, ub)
+        STRUCT_OBJ[eid] = add_geom(GEOM[eid], attrs("分析::支座利用率::%.2f–%.2f" % (lo, hi), rgb, name=eid))
+    step("分析：预制梁按弯矩设计值着色 %d 个（%d 档）、永久支座按利用率着色 %d 个（%d 档）" % (
+        len(g_rows), len(mb), len(b_rows), len(ub)))
+    return mb, ub, b_rows
 
 
 # ------------------------------------------------------------------ 出图
@@ -841,7 +972,7 @@ def sun_on():
         step("太阳光设置失败：%s" % ex)
 
 
-def shoot(img_dir, r, yard_info):
+def shoot(img_dir, r, yard_info, struct_info):
     view = DOC.Views.Find("Perspective", False) or DOC.Views.ActiveView
     DOC.Views.ActiveView = view
     view.Maximized = True
@@ -966,7 +1097,45 @@ def shoot(img_dir, r, yard_info):
     persp((ctr[0], ctr[1], zc), (cam[0], cam[1], zc + 95), 35)
     capture(view, os.path.join(img_dir, "yard.png"), 2000)
 
-    # 5–7 图纸：白底线框
+    # 5 结构：全桥预制梁按弯矩设计值着色 + 最不利连续墩的支座利用率
+    mb, ub, b_util = struct_info
+    only("地形", "下部结构", "分析::弯矩设计值", "上部结构::墩顶现浇连续段")
+    vp.DisplayMode = rendered
+    persp(_pt(mid, 0, z_mid - 8), _pt(mid - 70, -160, z_mid + 110), 35)
+    gv = [v for e in r["els"] if e.cls == "girder" and e.attrs["unit"] == 2 for v in e.params["solids"][0]["v"]]
+    vp.ZoomBoundingBox(RG.BoundingBox(RG.Point3d(*(min(v[i] for v in gv) for i in range(3))),
+                                      RG.Point3d(*(max(v[i] for v in gv) for i in range(3)))))   # 沿这个视向把第 2 联框满
+    s1_path, s2_path = os.path.join(tmp, "struct_a.png"), os.path.join(tmp, "struct_b.png")
+    capture(view, s1_path, 1300)
+    worst = max(b_util, key=lambda k_: b_util[k_])
+    wb = r["by_id"][worst]
+    ks = wb.attrs["support"]
+    only("下部结构::盖梁", "下部结构::墩柱", "下部结构::支座垫石", "分析::支座利用率", "地形::地面")
+    dots = []
+    for eid, u_ in b_util.items():
+        e = r["by_id"][eid]
+        if e.attrs["support"] == ks:
+            c_ = e.params["c"]
+            dots.append(DOC.Objects.AddTextDot(RG.TextDot("%.2f" % u_, RG.Point3d(c_[0], c_[1], c_[2] + 0.55)),
+                                               attrs("分析::支座利用率::标注", (0, 0, 0), mat=False)))
+    c0 = wb.params["c"]
+    (qx, qy), t, n = frame(support_stations()[ks])
+    cw = dict(C.DECKS)[wb.deck]
+    tgt = (qx + cw * n[0], qy + cw * n[1], c0[2])
+    persp(tgt, (tgt[0] - 9.0 * n[0] - 12.0 * t[0], tgt[1] - 9.0 * n[1] - 12.0 * t[1], tgt[2] + 7.5), 40)
+    capture(view, s2_path, 1300)
+    for d_ in dots:
+        DOC.Objects.Delete(d_, True)
+    wrow = next(row for row in bearing_force_rows(r) if row["bearing"] == worst)
+    legend = ([(rgb, "%.0f–%.0f kN·m" % (lo, hi)) for lo, hi, rgb in mb]
+              + [(rgb, "σ/σc %.1f–%.1f" % (lo, hi)) for lo, hi, rgb in ub])
+    stitch([s1_path, s2_path],
+           ["① 第 2 联两幅预制梁按基本组合正弯矩设计值 M_ud 着色：边梁、边跨最大（图例前 %d 格）" % len(mb),
+            "② %s 支座压应力利用率 σ/σc（图例后 %d 格）：最大 %s %.2f MPa，σc = %.0f MPa【假设】" % (
+                support_name(ks), len(ub), worst, float(wrow["sigma_MPa"]), C.SIGMA_C)],
+           os.path.join(img_dir, "structure_3d.png"), 2, legend)
+
+    # 6–9 图纸：白底线框
     app = Rhino.ApplicationSettings.AppearanceSettings
     bg = app.ViewportBackgroundColor
     app.ViewportBackgroundColor = SD.Color.White
@@ -981,6 +1150,9 @@ def shoot(img_dir, r, yard_info):
         only("图纸::梁长布置")
         lo, hi = length_specs_bbox()
         capture(view, os.path.join(img_dir, "length_specs.png"), 2400, ortho_front(lo, hi))
+        only("图纸::弯矩包络")
+        lo, hi = forces_bbox(r)
+        capture(view, os.path.join(img_dir, "forces.png"), 2400, ortho_front(lo, hi))
     finally:
         app.ViewportBackgroundColor = bg
     only(*TOPS)
@@ -1020,11 +1192,13 @@ def main():
     draw_profile(r)
     draw_sections(r)
     draw_length_specs(r)
+    draw_forces(r)
+    struct_info = draw_structure_colors(r)
     sun_on()
     img_dir = os.path.join(ROOT, "docs", "img")
     if not os.path.isdir(img_dir):
         os.makedirs(img_dir)
-    shoot(img_dir, r, yard_info)
+    shoot(img_dir, r, yard_info, struct_info)
     scrub_local_paths()
     out = os.path.join(ROOT, "model", "bridge_bim.3dm")
     opt = Rhino.FileIO.FileWriteOptions()

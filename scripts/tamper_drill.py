@@ -4,7 +4,7 @@
 .3dm、IFC、CSV、README 与代码之间，任何一处被单独改动都会被抓到；产物之间互有冗余的地方
 （表 ↔ IFC ↔ README、IFC ↔ 几何引擎）要求两到三道独立的检查同时变红。
 
-    python scripts/tamper_drill.py          # 约 2 分钟；不改动工作区里的任何文件
+    python scripts/tamper_drill.py          # 约 15 分钟；不改动工作区里的任何文件
 """
 import os
 import re
@@ -66,6 +66,7 @@ CHECKS = {
     "model": [PY, "-m", "unittest", "tests.test_model"],
     "ifc_data": [PY, "-m", "pytest", "-q", "tests/test_artifacts.py", "-k", "IfcData or Ifc4D"],
     "ifc_geom": [PY, "-m", "pytest", "-q", "tests/test_artifacts.py", "-k", "IfcGeometry"],
+    "ifc_struct": [PY, "-m", "pytest", "-q", "tests/test_artifacts.py", "-k", "IfcStructural"],
     "rhino": [PY, "-m", "pytest", "-q", "tests/test_artifacts.py", "-k", "Rhino3dm"],
 }
 
@@ -105,6 +106,24 @@ def drills():
     def readme(d):
         edit(os.path.join(d, "README.md"), "| 16 | 21 | 50 | 0 | 34 | 15 | 是 |", "| 16 | 21 | 50 | 0 | 33 | 15 | 是 |")
 
+    def reaction(d):
+        edit(os.path.join(d, "data", "bearing_reactions.csv"), ",0.1903,2403.4,", ",0.1903,2404.4,")
+
+    def ifc_reaction(d):
+        p = os.path.join(d, "model", "bridge_bim.ifc")
+        s = open(p, encoding="utf-8").read()
+        line = re.search(r"IFCSTRUCTURALLOADSINGLEFORCE\('RCK-B-L01-1a',0\.,0\.,([-\d.E+]+),", s)
+        edit(p, line.group(0), line.group(0).replace(line.group(1), repr(float(line.group(1)) + 1000.0)))
+
+    def gamma0(d):
+        edit(os.path.join(d, "bridge", "config.py"), "GAMMA_0 = 1.1 ", "GAMMA_0 = 1.0 ")
+
+    def m3_moment(d):
+        edit_3dm(os.path.join(d, "model", "bridge_bim.3dm"), "G-L01-1", "M_ud_pos", "9701.4")
+
+    def readme_structure(d):
+        edit(os.path.join(d, "README.md"), "| 1 / 5 号（边梁） | 0.46662 | 0.8541 |", "| 1 / 5 号（边梁） | 0.46662 | 0.8542 |")
+
     return [
         ("垫石标高表改一个垫石高 1 cm", bearings, ["data", "ifc_data", "readme"]),
         ("梁长表改一片梁的长度 1 cm", girders, ["data", "ifc_data"]),
@@ -114,6 +133,11 @@ def drills():
         (".3dm 里删掉一个临时支座", m3_delete, ["rhino"]),
         ("改参数（连续段允许更宽）却不重算产物", config, ["data", "model"]),
         ("README 改一个数", readme, ["readme"]),
+        ("支座反力表改一个 Rck 1 kN", reaction, ["data", "ifc_struct", "readme"]),
+        ("IFC 里一个支座反力结果改 1 kN", ifc_reaction, ["ifc", "ifc_struct"]),
+        ("改规范系数（γ0 1.1 → 1.0）却不重算", gamma0, ["data", "ifc"]),
+        (".3dm 里一片梁的弯矩设计值属性", m3_moment, ["rhino"]),
+        ("README 改一个横向分布系数", readme_structure, ["readme"]),
     ]
 
 

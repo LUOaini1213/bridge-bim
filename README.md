@@ -2,25 +2,33 @@
 
 [![ci](https://github.com/LUOaini1213/bridge-bim/actions/workflows/ci.yml/badge.svg)](https://github.com/LUOaini1213/bridge-bim/actions/workflows/ci.yml)
 
-**A curved precast-T-girder highway bridge modelled from its alignment up, in Rhino 8 and IFC 4.3.**
+**A curved precast-T-girder highway bridge modelled from its alignment up, in Rhino 8 and IFC 4.3, with a
+construction-stage structural analysis written back into the model.**
 A 1110 m route (tangent – clothoid – circular arc – clothoid – tangent, with a parabolic crest curve and
-superelevation) carries a 12-span, 3-unit continuous bridge: 990 elements, 120 of them precast T-girders.
+superelevation) carries a 12-span, 3-unit continuous bridge: 1470 elements, 120 of them precast T-girders.
 Girder lengths are equalised as an interval-stabbing problem — 10 lengths instead of 66, with an optimality
-certificate. 22 design and construction checks all pass, and each is proven to fail on a deliberately
+certificate. The superstructure is analysed stage by stage (simply supported girders, then continuity) under
+dead load and the JTG D60-2015 lane load, by a standard-library stiffness solver that is cross-checked against
+OpenSees; the results size the bearings and go back into the Rhino objects and into two IFC structural
+analysis models. It is a teaching-level analysis — no prestressing, reinforcement or section-capacity design.
+27 design, construction and structural checks all pass, and each is proven to fail on a deliberately
 broken model. The precast yard and the erector are scheduled together in 4D and exported with the model
-to IFC 4.3 (IfcAlignment + IfcBridge + IfcWorkSchedule), schema-valid and byte-reproducible.
-CI re-derives every number in this README from the committed `.3dm`, IFC and CSV files.
+to IFC 4.3 (IfcAlignment + IfcBridge + IfcWorkSchedule + IfcStructuralAnalysisModel), schema-valid and
+byte-reproducible. CI re-derives every number in this README from the committed `.3dm`, IFC and CSV files.
 
 ![Rhino 8 渲染：曲线 T 梁桥与被交道路](docs/img/hero.png)
 
 ## 一眼看懂
 
 - 路线 **1110** m：直线 – 回旋线 – 圆曲线 R=**700** m – 回旋线 – 直线，竖曲线 R=**10000** m，圆曲线段超高 **4%**
-- 桥梁 **K10+350.000 – K10+710.000**，**12**×30 m 分 **3** 联、先简支后连续，左右两幅；共 **990** 个构件，其中预制 T 梁 **120** 片
+- 桥梁 **K10+350.000 – K10+710.000**，**12**×30 m 分 **3** 联、先简支后连续，左右两幅；共 **1470** 个构件，其中预制 T 梁 **120** 片
 - 预制梁长：逐片按名义缝宽下料要 **66** 种长度，归并后 **10** 种（中跨 **4** + 边跨 **6**），并给出「不可能更少」的证书
-- 检查：模型 17 条 + 梁场与架梁 5 条，**22/22** 通过；每条都有一个故意弄坏的反例，证明它会变红
+- 上部结构计算：一期恒载由简支的预制梁承担，体系转换后二期恒载与公路-I级车道荷载由连续梁承担；
+  30 条梁位线里基本组合正弯矩最大 **9941.9** kN·m、墩顶负弯矩最大 **-6377.2** kN·m，活载长期挠度最大为限值的 **0.234**；
+  支座按压应力选型（伸缩端 φ450、连续墩 500×600），利用率最大 **0.831**；自写求解器与 OpenSees 互核到 1e-9
+- 检查：模型 17 条 + 梁场与架梁 5 条 + 上部结构 5 条，**27/27** 通过；每条都有一个故意弄坏的反例，证明它会变红
 - 4D：梁场 **16** 个台座提前 **21** 天开工，架桥机 **50** 天架完 120 片、**0** 天等梁；存梁峰值 **34** 片（容量 **40**）；**2027-02-02** 完成全部体系转换
-- IFC 4.3：**55,095** 个实体，schema 校验 **0** 个问题；几何引擎逐件算出实体，体积与位置和模型一致到 1e-6
+- IFC 4.3：**100,168** 个实体，schema 校验 **0** 个问题；几何引擎逐件算出实体，体积与位置和模型一致到 1e-6
 - 下文每个数字都由 `scripts/check_readme.py` 对着已提交的产物回算，CI 每次提交都跑
 
 路线、地形、桥梁都是虚构的示例；尺寸、工效、设备能力这些不是物理常数的参数集中在
@@ -30,12 +38,12 @@ CI re-derives every number in this README from the committed `.3dm`, IFC and CSV
 
 ```mermaid
 flowchart LR
-  cfg["bridge/config.py<br/>路线 · 桥型 · 工效参数"] --> core["bridge/<br/>路线 · 构件 · 检查 · 梁长归并 · 排程"]
+  cfg["bridge/config.py<br/>路线 · 桥型 · 工效参数 · 规范系数"] --> core["bridge/<br/>路线 · 构件 · 检查 · 梁长归并 · 排程 · 结构计算"]
   core --> rh["Rhino 8<br/>rhino/build_model.py"]
-  rh --> m3["model/bridge_bim.3dm<br/>构件 + BIM 属性"]
-  rh --> img["docs/img/*.png<br/>渲染 · 4D · 图纸"]
-  core --> ifc["model/bridge_bim.ifc<br/>IFC 4.3"]
-  core --> csv["data/*.csv<br/>梁长 · 垫石标高 · 工程量 · 排程"]
+  rh --> m3["model/bridge_bim.3dm<br/>构件 + BIM 属性 + 内力"]
+  rh --> img["docs/img/*.png<br/>渲染 · 4D · 图纸 · 弯矩包络"]
+  core --> ifc["model/bridge_bim.ifc<br/>IFC 4.3 + 结构分析模型"]
+  core --> csv["data/*.csv<br/>梁长 · 垫石标高 · 工程量 · 排程 · 内力 · 支座反力"]
   m3 -. rhino3dm 读回 .-> ci["tests/ + CI"]
   ifc -. ifcopenshell 读回 + 几何引擎 .-> ci
   csv -. 重算比对 .-> ci
@@ -70,12 +78,14 @@ ifcopenshell 的几何内核求值，是第三种算法，与自己的积分在�
 12 跨分 3 联（4×30 + 4×30 + 4×30）。13 条支承线分三种：2 个桥台、2 个过渡墩（两联交界，设伸缩缝）、
 9 个连续墩。
 
-- **伸缩端**（桥台、过渡墩）：梁端面距支承线 0.04 m，联与联之间留 0.08 m 伸缩缝；梁直接落在 φ350×77 永久支座上，共 60 个。
-- **连续端**（连续墩）：架梁时两跨梁端各落在一个临时支座上，共 180 个；墩中心一排 φ550×99 永久支座（90 个）
-  整个落在两梁端之间的缝下，体系转换前不接触预制梁。浇墩顶现浇连续段、张拉负弯矩钢束后拆临时支座，
-  由永久支座受力。连续段宽 0.708–0.998 m，由梁长归并决定（见下节）。
+- **伸缩端**（桥台、过渡墩）：梁端面距支承线 0.04 m，联与联之间留 0.08 m 伸缩缝；梁直接落在 φ450×77 永久支座上，共 60 个。
+- **连续端**（连续墩）：架梁时两跨梁端各落在一个临时支座上，共 180 个；墩中心一排 500×600×99 矩形永久支座（90 个，
+  顺桥向 500 mm）整个落在两梁端之间的缝下，体系转换前不接触预制梁。浇墩顶现浇连续段、张拉负弯矩钢束后拆临时支座，
+  由永久支座受力。连续段宽 0.708–0.998 m，由梁长归并决定（见下节）。支座规格由压应力验算定（见「上部结构计算」）。
 - 梁端面平行于径向支承线（曲线上最大斜角 1.228°），所以同一条缝在梁宽范围内等宽；
   盖梁、台帽顶面按该处桥面横坡做成斜面，垫石高 0.150–0.156 m。
+- 每跨相邻两片梁之间 5 道横隔板（两道端横隔板 + 1/4、1/2、3/4 跨），沿径向、腹板面到腹板面：
+  这是荷载横向分布用修正偏心压力法的前提（桥上有可靠的横向联结）。
 
 ![连续墩近景：① 架梁阶段落在临时支座上 ② 体系转换后由永久支座受力](docs/img/pier_detail.png)
 
@@ -123,6 +133,7 @@ ifcopenshell 的几何内核求值，是第三种算法，与自己的积分在�
 | 类别 | 数量 |
 |---|---|
 | 预制 T 梁 | 120 |
+| 横隔板 | 480 |
 | 湿接缝 | 96 |
 | 翼缘现浇段 | 48 |
 | 墩顶现浇连续段 | 18 |
@@ -140,7 +151,7 @@ ifcopenshell 的几何内核求值，是第三种算法，与自己的积分在�
 | 钻孔灌注桩 | 52 |
 
 铺装、护栏、翼缘现浇段沿路线每 1.5 m 取样，外缘跟随曲线（直梁「以直代曲」，曲线由现浇部分吸收）；
-每个多面体都闭合、法向朝外，共 902 个实体。检查直接在生成出的几何上量，不信任「按构造应当成立」：
+每个多面体都闭合、法向朝外，共 1382 个实体。检查直接在生成出的几何上量，不信任「按构造应当成立」：
 
 | 检查 | 结果 | 实测 |
 |---|---|---|
@@ -154,12 +165,12 @@ ifcopenshell 的几何内核求值，是第三种算法，与自己的积分在�
 | 垫石、临时支座落在盖梁 / 台帽顶面内 | ✅ | 最小边距 0.150 m（TS-R01-2b） |
 | 临时支座高 ≥ 0.10 m | ✅ | 180 个，0.235 m（TS-R01-2b）– 0.263 m（TS-R02-1a） |
 | 临时支座与永久支座垫石平面净距 ≥ 0.05 m | ✅ | 最小 0.100 m（TS-R10-1a） |
-| 连续墩永久支座全在现浇连续段下（距预制梁端 ≥ 0.05 m） | ✅ | 最小 0.075 m（B-P09-R1） |
+| 连续墩永久支座全在现浇连续段下（距预制梁端 ≥ 0.05 m） | ✅ | 最小 0.100 m（B-P09-R1） |
 | 墩盖梁底高出地面（桥台埋入路堤，不在此列） | ✅ | 最小 1.29 m（CAP-P01-L） |
 | 被交道路净空 ≥ 5.0 m | ✅ | 最小 13.58 m（G-L07-5 梁底） |
 | 墩柱外缘距被交道路边线 ≥ 1.0 m | ✅ | 最小 9.54 m（C-P06-L2） |
 | 最重预制梁 ≤ 架桥机额定 120 t | ✅ | G-R08-1 65.2 t，利用率 54% |
-| 多面体闭合、法向朝外 | ✅ | 902 个实体，不合格 0 个 |
+| 多面体闭合、法向朝外 | ✅ | 1382 个实体，不合格 0 个 |
 | 预制梁长规格数达到下界（区间刺穿最优性证书） | ✅ | 中跨 4 种、边跨 6 种；实际梁长与规格最大差 < 1e-09 m，越出可行区间 0 片 |
 | 存梁峰值 ≤ 存梁容量（20 个台座 × 2 层） | ✅ | 容量 40 片，峰值 34 片（2027-01-02） |
 | 存梁期 ≤ 90 天 | ✅ | 最长 15 天 |
@@ -178,31 +189,106 @@ ifcopenshell 的几何内核求值，是第三种算法，与自己的积分在�
 
 | 支座 | 类型 | 规格 | 墩台 | X | Y | 支座顶 | 垫石顶 | 盖梁顶 | 垫石高 |
 |---|---|---|---|---|---|---|---|---|---|
-| B-L01-1a | 伸缩端 | φ350×77 | A00 | 302.3540 | 177.0626 | 131.5313 | 131.4543 | 131.3037 | 0.1507 |
-| B-L01-2a | 伸缩端 | φ350×77 | A00 | 301.1167 | 179.1772 | 131.4688 | 131.3918 | 131.2413 | 0.1505 |
-| B-P01-L1 | 连续墩 | φ550×99 | P01 | 327.7582 | 192.2012 | 132.0311 | 131.9321 | 131.7821 | 0.1500 |
+| B-L01-1a | 伸缩端 | φ450×77 | A00 | 302.3540 | 177.0626 | 131.5313 | 131.4543 | 131.3037 | 0.1507 |
+| B-L01-2a | 伸缩端 | φ450×77 | A00 | 301.1167 | 179.1772 | 131.4688 | 131.3918 | 131.2413 | 0.1505 |
+| B-P01-L1 | 连续墩 | 500×600×99 | P01 | 327.7582 | 192.2012 | 132.0311 | 131.9321 | 131.7821 | 0.1500 |
 
 ## 工程量
 
 | 构件 | 数量 | 混凝土 (m³) | 强度等级 | 钢筋 (t) |
 |---|---|---|---|---|
 | 预制 T 梁 | 120 | 2943.55 | C50 | 559.27 |
+| 横隔板 | 480 | 303.21 | C50 | 45.48 |
 | 湿接缝 | 96 | 270.56 | C50 | 48.70 |
 | 翼缘现浇段 | 48 | 124.22 | C50 | 22.36 |
 | 墩顶现浇连续段 | 18 | 353.65 | C50 | 77.80 |
 | 桥面铺装 | 24 | 1690.58 | C40+沥青 | 0.00 |
 | 混凝土护栏 | 48 | 935.37 | C30 | 102.89 |
-| 支座垫石 | 150 | 11.92 | C50 | 1.19 |
+| 支座垫石 | 150 | 13.11 | C50 | 1.31 |
 | 盖梁 | 22 | 1030.66 | C40 | 164.90 |
 | 桥台台帽 | 4 | 111.26 | C40 | 16.69 |
 | 桥台背墙 | 4 | 59.10 | C30 | 7.09 |
 | 墩柱 | 44 | 637.89 | C40 | 89.31 |
 | 系梁 | 22 | 113.52 | C30 | 13.62 |
 | 钻孔灌注桩 | 52 | 3079.14 | C30 | 292.52 |
-| 结构混凝土合计（不含铺装） | 628 | 9670.84 |  | 1396.35 |
+| 结构混凝土合计（不含铺装） | 1108 | 9975.24 |  | 1441.95 |
 
 混凝土量是每个实体的精确体积（散度定理，对 IFC 几何引擎算出的体积核过）；钢筋按各类构件的
 kg/m³ 指标估算【假设】，不是配筋计算的结果。
+
+## 上部结构计算（教学级）
+
+[`bridge/structure.py`](bridge/structure.py) 在同一份构件上算上部结构：截面、荷载、支座位置都从 BIM 构件取，
+结果写回 `.3dm` 的构件属性和 IFC 的结构分析模型。只用标准库——平面梁单元直接刚度法、带状 Cholesky 分解、
+子空间迭代求频率都是自己写的——所以 Rhino 8 里的 Python 3.9 也能直接跑；测试里再用 OpenSees 逐项互核。
+这是教学级的内力估算，不是设计：没有预应力钢束，不验算截面应力与承载力，不计收缩徐变与温度梯度。
+每个规范系数的出处写在 [`bridge/config.py`](bridge/config.py)，没核到原文的标【假设】。
+
+施工阶段（先简支后连续）：
+
+1. **一期恒载**（预制梁 + 横隔板 + 湿接缝 + 翼缘现浇段，构件体积 × 26 kN/m³）由每片预制梁承担：它两端落在永久支座
+   （伸缩端）或临时支座（连续端）上，是简支梁。横隔板作为集中力放在它与梁轴的交点，每道一半给两侧的梁。
+2. **体系转换**：浇墩顶连续段（混凝土直接浇在永久支座上【假设】）、拆除临时支座——等于把临时支座在阶段一的反力
+   反向加到以永久支座为支承的整联连续梁上。
+3. **二期恒载**（铺装 + 护栏，每跨五片梁均分）与**汽车荷载**作用在连续梁上。
+
+全桥一期恒载 94680 kN、二期 65739 kN、连续段 9195 kN；每条梁位线每个阶段的支座反力与荷载平衡，
+荷载合计与构件体积 × 容重对账，差都 < 1e-9。
+
+汽车荷载按公路-I级车道荷载：qk = 10.5 kN/m，Pk = 2(L0 + 130) = 318.98–321.01 kN（取该联最大计算跨径【假设】）。
+逐节点求影响线，均布荷载布满同号区段、集中荷载放在最大竖标处，剪力与支座反力的 Pk 乘 1.2。
+荷载横向分布：跨中用修正偏心压力法（抗扭修正 β = 0.9310），支点用杠杆原理法，1–3 列车逐一枚举并乘横向车道布载系数；
+弯矩全跨用 mc，剪力与反力的 m 从支点的 m0 线性过渡到 1/4 跨的 mc。冲击系数按每条梁位线整联连续梁的竖弯基频：
+f1 = 3.201–3.459 Hz，μ = 0.1899–0.2036；负弯矩改用第二阶频率求 μ（偏安全）【假设】。
+
+| 梁位 | 组合截面 I (m⁴) | mc | mc（不计抗扭，β = 1） | m0 |
+|---|---|---|---|---|
+| 1 / 5 号（边梁） | 0.46662 | 0.8541 | 0.8873 | 0.9918 |
+| 2 / 4 号 | 0.45330 | 0.6126 | 0.6286 | 0.8673 |
+| 3 号 | 0.45330 | 0.4626 | 0.4626 | 0.8673 |
+
+组合：基本组合 γ0(γG·G + 1.4(1 + μ)Q)，γ0 = 1.1，结构重力有利时 γG 取 1.0；频遇组合 G + 0.7Q。
+左幅第 1 联 1 号梁（边梁）按施工阶段拆开的弯矩（kN·m；全表 210 行见 [`data/sections.csv`](data/sections.csv)）：
+
+| 截面 | 阶段一 | 体系转换 | 二期恒载 | 恒载合计 | 汽车 | μ | 基本组合 |
+|---|---|---|---|---|---|---|---|
+| 第 1 跨正弯矩最大处 | 2711.3 | 4.4 | 1179.0 | 3894.7 | 2419.4 | 0.1972 | 9601.4 |
+| P01 墩顶 | 0.0 | -305.6 | -1770.2 | -2075.8 | -1841.3 | 0.2272 | -6219.8 |
+| 第 2 跨正弯矩最大处 | 2671.5 | 2.2 | 561.1 | 3234.8 | 2033.3 | 0.1972 | 8018.5 |
+| P02 墩顶 | 0.0 | -298.6 | -1189.3 | -1487.9 | -1604.3 | 0.2272 | -4995.9 |
+
+墩顶没有一期恒载弯矩：预制梁在临时支座上简支时，墩顶还没连起来；连续后它只从体系转换里得到一小部分负弯矩，
+主要的负弯矩来自二期恒载和汽车荷载。
+
+![弯矩包络：阶段一简支、恒载合计、基本组合最大 / 最小](docs/img/forces.png)
+
+支座选型：Rck（结构重力与汽车荷载标准值的组合，计冲击）/ Ae（加劲钢板面积）≤ σc。伸缩端 Rck 最大 1242.9 kN、
+需要直径 0.408 m，取 φ450；连续墩 Rck 最大 2403.4 kN，圆形要 φ563，按 50 mm 进级是 φ600——可连续端梁端离墩中心线
+最近只有 0.35 m，φ600 的边缘离梁端只剩 0.05 m，正好卡在检查下限上。所以用矩形 500 × 600（顺桥向 × 横桥向），
+顺桥向离梁端 0.100 m。σc = 10 MPa 是【假设】：
+JTG 3362-2018 第 8.7.3 条规定 Ae ≥ Rck/σc，σc 按 JT/T 4 取用，本仓没核 JT/T 4 原文。
+
+| 检查 | 结果 | 实测 |
+|---|---|---|
+| 横向分布方法的前提：宽跨比 ≤ 0.5，每跨每对相邻梁在 1/4、1/2、3/4 跨有横隔板 | ✅ | B/l = 12.75/28.08 = 0.454；96/96 对梁间都有，位置最大偏差 < 1e-06 跨 |
+| 荷载与反力平衡、荷载与构件体积对账 | ✅ | 30 条梁位线 × 3 个阶段，反力与荷载最大相对差 < 1e-09；一期 94680 kN、二期 65739 kN、连续段 9195 kN，与构件体积 × 容重相差 < 1e-09 |
+| 汽车荷载长期挠度 ≤ L/600 | ✅ | 最大 11.7 mm / 限值 50.2 mm = 0.23（R 幅第 8 跨 1 号梁） |
+| 支座平均压应力 ≤ 10 MPa | ✅ | 150 个永久支座，最大 8.31 MPa = 0.83 σc（B-P05-R1，Rck 2403 kN） |
+| 基本组合下支座不脱空 | ✅ | 最小 496 kN（B-L09-5a：恒载 597 kN，汽车最小 -60 kN） |
+
+结构检查同样先证明会失败：[`tests/test_structure.py`](tests/test_structure.py) 给每条配了反例——把一道横隔板挪 3 m、
+漏算每跨一道横隔板、连续段混凝土算两遍、把挠度刚度 0.95EcI 改成 0.05EcI、在 BIM 里把一个支座顺桥向改成 300 mm、
+把容重改成 0.3 kN/m³ 让桥面「失重」——对应那一条必须变红。求解器本身先对闭式解（简支、外伸、两跨与四跨等跨
+连续梁的弯矩与反力，简支梁与两跨连续梁的频率），再在 OpenSees 里把同一条梁位线建一遍（elasticBeamColumn、
+beamUniform / beamPoint 荷载、一致质量），节点位移、弯矩、反力、影响线竖标与前两阶频率逐项差 < 1e-9（相对）；
+[`scripts/mutation_drill.py`](scripts/mutation_drill.py) 对求解器做 7 种变异（刚度矩阵一个元素 ×1.001、一致质量系数写错、
+单元内集中力的固端力左右对调、漏掉集中力 Pk……），每种都有测试失败。
+
+![第 2 联预制梁按弯矩设计值着色；P05 支座按压应力利用率着色](docs/img/structure_3d.png)
+
+结果回到模型里：120 片预制梁和 330 个支座（永久 150 + 临时 180）在 `.3dm` 的 UserText 与 IFC 的属性集
+BridgeBIM_Structural 里带着内力设计值、挠度、反力与压应力；逐片、逐个的数在
+[`data/girder_forces.csv`](data/girder_forces.csv) 与 [`data/bearing_reactions.csv`](data/bearing_reactions.csv)。
 
 ## 梁场与 4D
 
@@ -269,7 +355,7 @@ kg/m³ 指标估算【假设】，不是配筋计算的结果。
 - **IfcBridge**（GIRDER）→ 上部结构 / 下部结构 → 左幅、右幅 → 第 1–3 联（DECK_SEGMENT）；桥台与墩（ABUTMENT / PIER）
   用 IfcLinearPlacement 按桩号定位在 IfcGradientCurve 上，共 23 个 IfcBridgePart。
 - **预制 T 梁**：IfcBeam T_BEAM，T 形截面（IfcArbitraryClosedProfileDef）沿梁轴斜向拉伸，两端各用一个
-  IfcBooleanClippingResult 按径向支承线切齐，共 240 个切割；其余多面体是 IfcPolygonalFaceSet（782 个，
+  IfcBooleanClippingResult 按径向支承线切齐，共 240 个切割；其余多面体是 IfcPolygonalFaceSet（1262 个，
   与 Rhino 网格同一组顶点），墩柱、桩、支座、系梁是拉伸体。
 - **属性与工程量**：每个构件带 BridgeBIM_Element（编号、所属联 / 墩台、梁长、端部类型、缝宽、预制与架设日期、
   支座顶与垫石高程……），标准的 Pset_BeamCommon、Pset_ConcreteElementGeneral、Pset_PrecastConcreteElementGeneral，
@@ -277,10 +363,19 @@ kg/m³ 指标估算【假设】，不是配筋计算的结果。
 - **4D**：IfcWorkPlan → IfcWorkSchedule 下 261 个 IfcTask（预制 120、架设 120、连续段浇筑与体系转换各 6，另有汇总任务），
   架设任务以 IfcRelAssignsToProduct 产出对应的梁，体系转换任务以 IfcRelAssignsToProcess 消耗（拆除）临时支座；
   251 条 IfcRelSequence 的时差都按两端任务的实际时刻算出。
+- **结构分析**：两个 IfcStructuralAnalysisModel，按施工阶段分开。阶段一「预制梁简支」：360 根 IfcStructuralCurveMember
+  （每片梁两端外伸段 + 支座间）、480 个 IfcStructuralPointConnection，其中 240 个带 IfcBoundaryNodeCondition
+  （伸缩端永久支座与临时支座）。阶段二「体系转换后的连续梁」：360 根杆件（每条梁位线 12 段）、390 个节点，
+  150 个永久支座为边界条件。荷载工况是一期恒载（DEAD_LOAD_G）、拆除临时支座（PROPPING，反力反向施加）与二期恒载
+  （COMPLETION_G1），共 720 条线荷载（按水平投影长度）和 1140 个集中力；结果组是阶段一支座反力与永久支座反力
+  标准值组合 Rck，共 390 个 IfcStructuralPointReaction。分析杆件、支承点用 IfcRelAssignsToProduct 挂到对应的梁、
+  连续段和支座上。测试核对：杆件端点就是节点、边界条件只在支承处、荷载合计等于计算、反力逐个等于支座表、
+  阶段一杆件落在梁轴线上。
 
 | 构件 | IFC 实体 | PredefinedType | 个数 |
 |---|---|---|---|
 | 预制 T 梁 | IfcBeam | T_BEAM | 120 |
+| 横隔板 | IfcBeam | DIAPHRAGM | 480 |
 | 盖梁、台帽 | IfcBeam | PIERCAP | 26 |
 | 支座垫石 | IfcBeam | HATSTONE | 150 |
 | 墩顶连续段、系梁 | IfcBeam | USERDEFINED | 40 |
@@ -294,7 +389,7 @@ kg/m³ 指标估算【假设】，不是配筋计算的结果。
 | 伸缩装置 | IfcDiscreteAccessory | EXPANSION_JOINT_DEVICE | 8 |
 | 桥台背墙 | IfcWall | RETAININGWALL | 4 |
 
-文件共 **55,095** 个实体，ifcopenshell 的 schema 校验 **0** 个问题。GlobalId 由名称经 uuid5 推出、文件头时间戳固定，
+文件共 **100,168** 个实体，ifcopenshell 的 schema 校验 **0** 个问题。GlobalId 由名称经 uuid5 推出、文件头时间戳固定，
 同一份模型每次导出逐字节相同；在另一台机器上重导时，数学库末位的差别只允许落在浮点数的 1e-9（相对）以内，
 结构、编号、文字必须逐字相同（[`bridge/numcmp.py`](bridge/numcmp.py)）。交给几何引擎（OpenCascade）逐件算成实体后：
 斜拉伸加两次布尔切割的 T 梁与多面体，体积和包围盒都与模型差 < 1e-6；圆柱被引擎离散成多边形，体积差 < 0.5%。
@@ -307,14 +402,16 @@ python -m venv .venv
 python scripts/build_data.py              # 重算 data/（只用标准库）
 python scripts/export_ifc.py              # 写 model/bridge_bim.ifc
 python scripts/run_rhino.py               # 需要本机 Rhino 8：建模、出图、存 .3dm
-python -m unittest tests.test_alignment tests.test_model tests.test_schedule
-python -m pytest tests                    # 全部测试
+python -m unittest tests.test_alignment tests.test_model tests.test_schedule tests.test_structure
+python -m pytest tests                    # 全部测试（含与 OpenSees 互核）
 python scripts/check_readme.py            # README 里的数字逐个回算
 python scripts/tamper_drill.py            # 篡改演练：改一处产物，必须有检查变红
+python scripts/mutation_drill.py          # 变异演练：把求解器改错一处，必须有测试失败
 ```
 
 CI 跑两组：`bridge/` 只用标准库、兼容 Python 3.9（Rhino 8 内置的 CPython 就是 3.9，建模脚本 import 同一份代码），
-先单独跑一遍不装任何依赖的测试；再装 ifcopenshell 与 rhino3dm 跑全部 91 个测试、重导 IFC 比对、回算 README。
+先单独跑一遍不装任何依赖的测试；再装 ifcopenshell、rhino3dm 与 openseespy 跑全部 137 个测试、重导 IFC 比对、回算 README。
+OpenSeesPy 只在测试里用，拿来互核自写的求解器（它的许可对研究、教学与内部使用免费）。
 Rhino 那一步在本机跑，它的产物 `model/bridge_bim.3dm` 由 rhino3dm 独立读回来核。
 
 ## 仓库结构
@@ -326,15 +423,18 @@ Rhino 那一步在本机跑，它的产物 `model/bridge_bim.3dm` 由 rhino3dm �
 | `bridge/model.py` | 构件生成：分联、梁长归并（区间刺穿 + 证书）、T 梁斜切棱柱、现浇部分、下部结构 |
 | `bridge/checks.py` | 17 条模型检查 |
 | `bridge/schedule.py` / `bridge/yard.py` | 梁场预制、存梁、架梁、体系转换；梁场布置与 5 条检查 |
-| `bridge/pipeline.py` | 交付表：梁长、垫石标高、工程量、逐桩坐标、排程、敏感性 |
-| `rhino/build_model.py` | Rhino 8 建模、剖切出横断面、出图 |
-| `scripts/` | 数据重算、IFC 导出、调起 Rhino、README 回算、篡改演练 |
-| `tests/` | 路线、模型与反例、排程、产物互核、README |
-| `data/` | 15 个表（CSV / JSON） |
+| `bridge/structure.py` | 上部结构计算：截面、横向分布、施工阶段、影响线加载、频率与冲击系数、组合、挠度与支座验算；5 条结构检查 |
+| `bridge/pipeline.py` | 交付表：梁长、垫石标高、工程量、逐桩坐标、排程、敏感性、内力、支座反力 |
+| `rhino/build_model.py` | Rhino 8 建模、剖切出横断面、弯矩包络图、按内力着色、出图 |
+| `scripts/` | 数据重算、IFC 导出（含结构分析模型）、调起 Rhino、README 回算、篡改演练、变异演练 |
+| `tests/` | 路线、模型与反例、排程、结构计算（闭式解、OpenSees 互核、反例）、产物互核、README |
+| `data/` | 20 个表（CSV / JSON） |
 | `model/` | `.3dm`、IFC、Rhino 构建日志 |
 
 ## 范围
 
-这是 BIM 建模与施工组织的示例，不是桥梁设计：梁高、截面、支座规格、桩长按公路预制 T 梁桥的常见量级取定值，
-没有做荷载、预应力、配筋或承载力计算；缝宽范围、垫石高度范围等规则是示例取值，不是规范条文。
+这是 BIM 建模、施工组织与教学级结构计算的示例，不是桥梁设计：梁高、截面、桩长按公路预制 T 梁桥的常见量级取定值；
+结构计算只到内力、挠度与支座压应力，没有预应力钢束、配筋、截面应力与承载力验算，也不计收缩徐变、温度梯度、
+预应力次内力与支座沉降，作用组合里只有结构重力与汽车荷载；曲线梁的弯扭耦合不计，每条梁位线展开成直梁。
+缝宽范围、垫石高度范围等规则是示例取值，不是规范条文。
 桥面铺装按「设计路面以下 0.20 m」取底面，预制梁翼缘顶在横坡方向上与它几厘米的高差（由调平层吸收）没有建模。

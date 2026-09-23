@@ -11,6 +11,7 @@ import csv
 import glob
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -25,7 +26,7 @@ import rhino3dm                # noqa: E402
 
 from bridge import alignment as AL, config as C, model as M   # noqa: E402
 
-EXPECTED = 154
+EXPECTED = 185
 README = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
 
 
@@ -49,6 +50,11 @@ CONV = rows("conversions.csv")
 ELEMENTS = rows("elements.csv")
 IFC = ifcopenshell.open(os.path.join(ROOT, "model", "bridge_bim.ifc"))
 T_MODEL, T_ALIGN, T_ART = src("tests/test_model.py"), src("tests/test_alignment.py"), src("tests/test_artifacts.py")
+T_STRUCT, S_STRUCT = src("tests/test_structure.py"), src("bridge/structure.py")
+LATERAL = {int(r["pos"]): r for r in rows("lateral_distribution.csv")}
+LINES = rows("girder_lines.csv")
+SECTIONS = rows("sections.csv")
+REACTIONS = rows("bearing_reactions.csv")
 
 failures, checked = [], [0]
 
@@ -101,6 +107,27 @@ def n_tests():
     return k
 
 
+def mutants():
+    """scripts/mutation_drill.py 里 MUTANTS 列表的长度（不 import：它会 import 测试）。"""
+    tree = ast.parse(src("scripts/mutation_drill.py"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) == "MUTANTS":
+            return len(node.value.elts)
+    failures.append("scripts/mutation_drill.py 里找不到 MUTANTS")
+    return "?"
+
+
+def ifc_structure():
+    """两个结构分析模型各自的杆件、节点、带边界条件的节点数；以及荷载、反力的实体数。"""
+    out = {}
+    for m in IFC.by_type("IfcStructuralAnalysisModel"):
+        objs = [o for rel in m.IsGroupedBy for o in rel.RelatedObjects]
+        pts = [o for o in objs if o.is_a("IfcStructuralPointConnection")]
+        out[m.Name] = (sum(1 for o in objs if o.is_a("IfcStructuralCurveMember")), len(pts),
+                       sum(1 for o in pts if o.AppliedCondition is not None))
+    return out
+
+
 def main():
     cls = Counter(r["class"] for r in ELEMENTS)
     kinds = Counter(M.support_kind(k) for k in range(C.N_SPANS + 1))
@@ -127,7 +154,7 @@ def main():
     claim("摘要：跨数与联数", r"carries a (\d+)-span, (\d+)-unit", [C.N_SPANS, len(C.UNITS)])
     claim("摘要：构件与梁", r"(\d+) elements, (\d+) of them precast", [len(ELEMENTS), cls["girder"]])
     claim("摘要：梁长", r"(\d+) lengths instead of (\d+)", [SUMMARY["length_specs"], SUMMARY["length_specs_naive"]])
-    claim("摘要：检查", r"(\d+) design and construction checks", [len(CHECKS)])
+    claim("摘要：检查", r"(\d+) design, construction and structural checks", [len(CHECKS)])
     # ---- 一眼看懂
     claim("总览：路线", r"路线 \*\*(\d+)\*\* m：直线 – 回旋线 – 圆曲线 R=\*\*(\d+)\*\* m – 回旋线 – 直线，竖曲线 R=\*\*(\d+)\*\* m，圆曲线段超高 \*\*(\d+)%\*\*",
           ["%d" % AL.LENGTH, "%d" % C.R_CURVE, "%d" % round(R_v), "%d" % round(C.SUPERELEVATION * 100)])
@@ -136,8 +163,16 @@ def main():
     claim("总览：构件", r"共 \*\*(\d+)\*\* 个构件，其中预制 T 梁 \*\*(\d+)\*\* 片", [len(ELEMENTS), cls["girder"]])
     claim("总览：梁长", r"要 \*\*(\d+)\*\* 种长度，归并后 \*\*(\d+)\*\* 种（中跨 \*\*(\d+)\*\* \+ 边跨 \*\*(\d+)\*\*）",
           [SUMMARY["length_specs_naive"], SUMMARY["length_specs"], fams["中跨"], fams["边跨"]])
-    claim("总览：检查", r"模型 (\d+) 条 \+ 梁场与架梁 (\d+) 条，\*\*(\d+)/(\d+)\*\* 通过",
-          [groups["模型"], groups["梁场与架梁"], passed, len(CHECKS)])
+    claim("总览：检查", r"模型 (\d+) 条 \+ 梁场与架梁 (\d+) 条 \+ 上部结构 (\d+) 条，\*\*(\d+)/(\d+)\*\* 通过",
+          [groups["模型"], groups["梁场与架梁"], groups["上部结构"], passed, len(CHECKS)])
+    claim("总览：结构计算", r"(\d+) 条梁位线里基本组合正弯矩最大 \*\*([\d.]+)\*\* kN·m、墩顶负弯矩最大 \*\*(-[\d.]+)\*\* kN·m，"
+          r"活载长期挠度最大为限值的 \*\*([\d.]+)\*\*；\s*\n  支座按压应力选型（伸缩端 (φ\d+)、连续墩 (\d+×\d+)），"
+          r"利用率最大 \*\*([\d.]+)\*\*；自写求解器与 OpenSees 互核到 (1e-\d+)",
+          [SUMMARY["structure_lines"], "%.1f" % SUMMARY["Mud_pos_max"], "%.1f" % SUMMARY["Mud_neg_min"],
+           "%.3f" % SUMMARY["deflection_ratio_max"], "φ%d" % round(C.BEARING_D * 1000),
+           "%d×%d" % (round(C.BEARING_CONT_A * 1000), round(C.BEARING_CONT_B * 1000)),
+           "%.3f" % max(SUMMARY["bearing_util_end_max"], SUMMARY["bearing_util_cont_max"]),
+           test_const(T_STRUCT, r"self\.assertLess\(rel\(a, b\), (1e-\d+)\)")])
     claim("总览：4D", r"梁场 \*\*(\d+)\*\* 个台座提前 \*\*(\d+)\*\* 天开工，架桥机 \*\*(\d+)\*\* 天架完 (\d+) 片、\*\*(\d+)\*\* 天等梁；存梁峰值 \*\*(\d+)\*\* 片（容量 \*\*(\d+)\*\*）；\*\*([\d-]+)\*\* 完成全部体系转换",
           [SUMMARY["beds"], SUMMARY["lead_days"], SUMMARY["erect_days"], SUMMARY["girders"], SUMMARY["wait_days"],
            SUMMARY["storage_peak"], SUMMARY["storage_capacity"], SUMMARY["conversion_last"]])
@@ -168,9 +203,11 @@ def main():
     claim("伸缩端", r"梁端面距支承线 ([\d.]+) m，联与联之间留 ([\d.]+) m 伸缩缝；梁直接落在 (φ\d+×\d+) 永久支座上，共 (\d+) 个",
           ["%.2f" % C.EXP_HALF, "%.2f" % (2 * C.EXP_HALF), "φ%d×%d" % (C.BEARING_D * 1000, round(C.BEARING_T * 1000)),
            sizes["φ%d×%d" % (C.BEARING_D * 1000, round(C.BEARING_T * 1000))]])
-    claim("连续端", r"各落在一个临时支座上，共 (\d+) 个；墩中心一排 (φ\d+×\d+) 永久支座（(\d+) 个）",
-          [cls["temp_support"], "φ%d×%d" % (C.BEARING_CONT_D * 1000, round(C.BEARING_CONT_T * 1000)),
-           sizes["φ%d×%d" % (C.BEARING_CONT_D * 1000, round(C.BEARING_CONT_T * 1000))]])
+    cont_size = "%d×%d×%d" % (round(C.BEARING_CONT_A * 1000), round(C.BEARING_CONT_B * 1000), round(C.BEARING_CONT_T * 1000))
+    claim("连续端", r"各落在一个临时支座上，共 (\d+) 个；墩中心一排 (\d+×\d+×\d+) 矩形永久支座（(\d+) 个，\s*\n  顺桥向 (\d+) mm）",
+          [cls["temp_support"], cont_size, sizes[cont_size], "%d" % round(C.BEARING_CONT_A * 1000)])
+    claim("横隔板", r"每跨相邻两片梁之间 (\d+) 道横隔板（两道端横隔板 \+ ([^）]+) 跨）",
+          [2 + len(C.DIAPHRAGM_FRACTIONS), "、".join({0.25: "1/4", 0.5: "1/2", 0.75: "3/4"}[f] for f in C.DIAPHRAGM_FRACTIONS)])
     claim("连续段宽", r"连续段宽 ([\d.]+)–([\d.]+) m，由梁长归并决定", ["%.3f" % min(joints), "%.3f" % max(joints)])
     claim("斜角与垫石", r"曲线上最大斜角 ([\d.]+)°[\s\S]*?垫石高 ([\d.]+)–([\d.]+) m", ["%.3f" % skew, "%.3f" % min(seat_h), "%.3f" % max(seat_h)])
     # ---- 梁长归并
@@ -185,7 +222,7 @@ def main():
         claim("浮动敏感性 %s" % r["tolerance_m"], r"\| ±%s \| ([\d.–]+) \| (\d+) \| (\d+) \| (\d+) \|" % re.escape(r["tolerance_m"]),
               [r["joint_range_m"], r["middle"], r["end"], r["total"]])
     # ---- 构件与检查
-    zh = {"girder": "预制 T 梁", "wet_joint": "湿接缝", "cantilever": "翼缘现浇段", "continuity": "墩顶现浇连续段",
+    zh = {"girder": "预制 T 梁", "diaphragm": "横隔板", "wet_joint": "湿接缝", "cantilever": "翼缘现浇段", "continuity": "墩顶现浇连续段",
           "pavement": "桥面铺装", "barrier": "混凝土护栏", "expansion_joint": "伸缩装置", "seat": "支座垫石",
           "bearing": "板式橡胶支座", "temp_support": "临时支座", "cap": "盖梁", "abut_cap": "桥台台帽",
           "backwall": "桥台背墙", "column": "墩柱", "tie": "系梁", "pile": "钻孔灌注桩"}
@@ -212,6 +249,56 @@ def main():
             continue
         claim("工程量 %s" % k, r"\| %s \| (\d+) \| ([\d.]+) \| ([^|]*) \| ([\d.]+) \|" % re.escape(r["name"]),
               [r["count"], r["concrete_m3"], r["grade"], r["rebar_t"]])
+    # ---- 上部结构计算
+    eq = re.search(r"一期 (\d+) kN、二期 (\d+) kN、连续段 (\d+) kN", detail["荷载与反力平衡、荷载与构件体积对账"]).groups()
+    claim("结构：荷载合计", r"全桥一期恒载 (\d+) kN、二期 (\d+) kN、连续段 (\d+) kN；[\s\S]*?差都 < (1e-\d+)。",
+          list(eq) + [test_const(S_STRUCT, r"acc < (1e-\d+)")])
+    pks = [float(r["Pk_kN"]) for r in LINES]
+    claim("结构：车道荷载", r"qk = ([\d.]+) kN/m，Pk = 2\(L0 \+ 130\) = ([\d.]+)–([\d.]+) kN",
+          ["%g" % C.Q_K, "%.2f" % min(pks), "%.2f" % max(pks)])
+    claim("结构：β", r"抗扭修正 β = ([\d.]+)", [LATERAL[1]["beta"]])
+    claim("结构：频率与冲击", r"f1 = ([\d.]+)–([\d.]+) Hz，μ = ([\d.]+)–([\d.]+)；",
+          ["%.3f" % SUMMARY["f1_min"], "%.3f" % SUMMARY["f1_max"], "%.4f" % SUMMARY["mu_pos_min"], "%.4f" % SUMMARY["mu_pos_max"]])
+    for label, pos in (("1 / 5 号（边梁）", 1), ("2 / 4 号", 2), ("3 号", 3)):
+        r = LATERAL[pos]
+        claim("横向分布 %d" % pos, r"\| %s \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \|" % re.escape(label),
+              [r["I_composite_m4"], r["mc_max"], r["mc_no_torsion"], r["m0_max"]])
+    claim("结构：γ0", r"基本组合 γ0\(γG·G \+ 1\.4\(1 \+ μ\)Q\)，γ0 = ([\d.]+)", ["%.1f" % C.GAMMA_0])
+    claim("结构：截面表行数", r"全表 (\d+) 行见 \[`data/sections\.csv`\]", [len(SECTIONS)])
+    l111 = [r for r in SECTIONS if (r["deck"], r["unit"], r["line"]) == ("L", "1", "1")]
+    for label, at in (("第 1 跨正弯矩最大处", "第 1 跨"), ("P01 墩顶", "P01"), ("第 2 跨正弯矩最大处", "第 2 跨"), ("P02 墩顶", "P02")):
+        r = next(x for x in l111 if x["at"] == at)
+        claim("施工阶段弯矩 %s" % at, r"\| %s \| (-?[\d.]+) \| (-?[\d.]+) \| (-?[\d.]+) \| (-?[\d.]+) \| (-?[\d.]+) \| ([\d.]+) \| (-?[\d.]+) \|"
+              % re.escape(label), [r["M_G1"], r["M_conversion"], r["M_G2"], r["M_G"], r["M_Q"], r["mu"], r["M_ud"]])
+    ends = [r for r in REACTIONS if r["kind"] == "伸缩端"]
+    conts = [r for r in REACTIONS if r["kind"] == "连续墩"]
+    rck_c = max(float(r["Rck"]) for r in conts)
+    circle = 2 * math.sqrt(rck_c / (C.SIGMA_C * 1000.0) / math.pi) + 2 * C.BEARING_COVER
+    step_d = 50                                   # 圆形支座直径按 50 mm 进级
+    next_d = int(math.ceil(circle * 1000 / step_d)) * step_d
+    clear_need = test_const(src("bridge/checks.py"), r"def check_perm_bearing_under_joint\(els, need=([\d.]+)\)")
+    perm_detail = detail["连续墩永久支座全在现浇连续段下（距预制梁端 ≥ %s m）" % clear_need]
+    claim("支座选型", r"伸缩端 Rck 最大 ([\d.]+) kN、\s*\n需要直径 ([\d.]+) m，取 (φ\d+)；连续墩 Rck 最大 ([\d.]+) kN，圆形要 φ(\d+)，"
+          r"按 (\d+) mm 进级是 φ(\d+)——可连续端梁端离墩中心线\s*\n最近只有 ([\d.]+) m，φ\d+ 的边缘离梁端只剩 ([\d.]+) m，"
+          r"正好卡在检查下限上。所以用矩形 (\d+) × (\d+)（顺桥向 × 横桥向），\s*\n顺桥向离梁端 ([\d.]+) m。σc = (\d+) MPa 是【假设】",
+          ["%.1f" % max(float(r["Rck"]) for r in ends), "%.3f" % max(float(r["size_required_m"]) for r in ends),
+           "φ%d" % round(C.BEARING_D * 1000), "%.1f" % rck_c, "%d" % round(circle * 1000), step_d, next_d,
+           "%.2f" % C.CONT_HALF_MIN, "%.2f" % (C.CONT_HALF_MIN - next_d / 2000.0),
+           "%d" % round(C.BEARING_CONT_A * 1000), "%d" % round(C.BEARING_CONT_B * 1000),
+           re.search(r"最小 ([\d.]+) m", perm_detail).group(1), "%d" % C.SIGMA_C])
+    if abs(C.CONT_HALF_MIN - next_d / 2000.0 - float(clear_need)) > 1e-9:
+        failures.append("支座选型：README 说 φ%d 正好卡在下限 %s m 上，参数变了这句话就不成立" % (next_d, clear_need))
+    claim("结构反例", r"把一道横隔板挪 (\d+) m、\s*\n漏算每跨一道横隔板、连续段混凝土算两遍、把挠度刚度 ([\d.]+)EcI 改成 ([\d.]+)EcI、"
+          r"在 BIM 里把一个支座顺桥向改成 (\d+) mm、\s*\n把容重改成 ([\d.]+) kN/m³",
+          [int(float(test_const(T_STRUCT, r"\(p\[0\] \+ ([\d.]+) \* t\[0\]"))), "%.2f" % C.STIFF_FACTOR,
+           test_const(T_STRUCT, r'"STIFF_FACTOR", ([\d.]+)\)'),
+           "%d" % round(1000 * float(test_const(T_STRUCT, r'params\["w"\] = ([\d.]+)'))),
+           test_const(T_STRUCT, r'"UNIT_RC", ([\d.]+)\)')])
+    claim("OpenSees 互核", r"前两阶频率逐项差 < (1e-\d+)（相对）", [test_const(T_STRUCT, r"\), (1e-\d+) \* scale_m\)")])
+    claim("变异演练", r"对求解器做 (\d+) 种变异", [mutants()])
+    n_temp = sum(1 for r in REACTIONS if r["kind"] == "临时支座")
+    claim("结果回写", r"(\d+) 片预制梁和 (\d+) 个支座（永久 (\d+) \+ 临时 (\d+)）",
+          [cls["girder"], len(REACTIONS), len(REACTIONS) - n_temp, n_temp])
     # ---- 梁场与 4D
     claim("梁场布置", r"(\d+) 个制梁台座、(\d+) 个存梁位 × (\d+) 层、两台 (\d+) t 龙门吊抬吊、钢筋加工区，\s*\n运梁便道 (\d+) m",
           [C.N_BEDS, C.STORAGE_POSITIONS, C.STORAGE_LAYERS, "%d" % C.GANTRY_SWL_T, "%d" % round(SUMMARY["haul_route_m"])])
@@ -248,7 +335,16 @@ def main():
           [len(tasks), sum(1 for t in tasks if t.Name.startswith("预制 ")), sum(1 for t in tasks if t.Name.startswith("架设 G-")),
            sum(1 for t in tasks if t.Name.startswith("体系转换 "))])
     claim("IFC 顺序关系", r"(\d+) 条 IfcRelSequence", [len(IFC.by_type("IfcRelSequence"))])
-    ifc_rows = [("预制 T 梁", "IfcBeam", "T_BEAM"), ("盖梁、台帽", "IfcBeam", "PIERCAP"), ("支座垫石", "IfcBeam", "HATSTONE"),
+    sm = ifc_structure()
+    s1, s2 = sm.get("施工阶段一：预制梁简支", (0, 0, 0)), sm.get("施工阶段二：体系转换后的连续梁", (0, 0, 0))
+    claim("IFC 结构分析模型", r"(两)个 IfcStructuralAnalysisModel，按施工阶段分开。阶段一「预制梁简支」：(\d+) 根 IfcStructuralCurveMember"
+          r"[\s\S]*?(\d+) 个 IfcStructuralPointConnection，其中 (\d+) 个带 IfcBoundaryNodeCondition[\s\S]*?"
+          r"阶段二「体系转换后的连续梁」：(\d+) 根杆件（每条梁位线 (\d+) 段）、(\d+) 个节点，\s*\n  (\d+) 个永久支座为边界条件",
+          ["两" if len(sm) == 2 else len(sm), s1[0], s1[1], s1[2], s2[0], s2[0] // max(1, len(LINES)), s2[1], s2[2]])
+    claim("IFC 结构荷载与结果", r"共 (\d+) 条线荷载（按水平投影长度）和 (\d+) 个集中力；[\s\S]*?共 (\d+) 个 IfcStructuralPointReaction",
+          [len(IFC.by_type("IfcStructuralCurveAction")), len(IFC.by_type("IfcStructuralPointAction")),
+           len(IFC.by_type("IfcStructuralPointReaction"))])
+    ifc_rows = [("预制 T 梁", "IfcBeam", "T_BEAM"), ("横隔板", "IfcBeam", "DIAPHRAGM"), ("盖梁、台帽", "IfcBeam", "PIERCAP"), ("支座垫石", "IfcBeam", "HATSTONE"),
                 ("墩顶连续段、系梁", "IfcBeam", "USERDEFINED"), ("永久支座", "IfcBearing", "ELASTOMERIC"),
                 ("临时支座", "IfcBearing", "USERDEFINED"), ("湿接缝、翼缘现浇段", "IfcSlab", "USERDEFINED"),
                 ("墩柱", "IfcColumn", "PIERSTEM"), ("钻孔灌注桩", "IfcPile", "BORED"), ("桥面铺装", "IfcCourse", "PAVEMENT"),
@@ -265,6 +361,7 @@ def main():
     # ---- 复现与结构
     claim("测试总数", r"跑全部 (\d+) 个测试", [n_tests()])
     claim("仓库：检查条数", r"\| `bridge/checks\.py` \| (\d+) 条模型检查 \|", [groups["模型"]])
+    claim("仓库：结构检查", r"频率与冲击系数、组合、挠度与支座验算；(\d+) 条结构检查", [groups["上部结构"]])
     claim("仓库：梁场检查", r"梁场布置与 (\d+) 条检查", [groups["梁场与架梁"]])
     claim("仓库：表数", r"\| `data/` \| (\d+) 个表", [len([p for p in os.listdir(os.path.join(ROOT, "data"))
                                                         if p.endswith((".csv", ".json"))])])

@@ -132,7 +132,8 @@ class Rhino3dm(unittest.TestCase):
     def test_build_log_and_images(self):
         log = json.load(open(os.path.join(ROOT, "model", "build_log.json"), encoding="utf-8"))
         self.assertTrue(log["ok"])
-        for name in ("hero", "pier_detail", "erection_4d", "yard", "profile", "sections", "length_specs"):
+        for name in ("hero", "pier_detail", "erection_4d", "yard", "profile", "sections", "length_specs", "forces",
+                     "structure_3d"):
             self.assertTrue(os.path.getsize(os.path.join(ROOT, "docs", "img", name + ".png")) > 50000, name)
 
 
@@ -375,6 +376,170 @@ class Ifc4D(unittest.TestCase):
         self.assertTrue(all(v == 1 for v in removed.values()))
         convs = [t for n, t in self.tasks.items() if n.startswith("体系转换 ")]
         self.assertEqual(sorted(t.TaskTime.ScheduleStart[:10] for t in convs), sorted(r["conversion"] for r in c_rows))
+
+
+class IfcStructural(unittest.TestCase):
+    """IFC 里的两个结构分析模型：拓扑自洽、边界条件只在支承点、荷载合计与计算一致、反力等于支座表、
+    分析杆件落在物理梁的轴线上并挂到它名下。"""
+    STAGE1, STAGE2 = "施工阶段一：预制梁简支", "施工阶段二：体系转换后的连续梁"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.models = {m.Name: m for m in IFC.by_type("IfcStructuralAnalysisModel")}
+        cls.items = {}
+        for name, m in cls.models.items():
+            objs = [o for rel in m.IsGroupedBy for o in rel.RelatedObjects]
+            cls.items[name] = {"members": [o for o in objs if o.is_a("IfcStructuralCurveMember")],
+                               "points": [o for o in objs if o.is_a("IfcStructuralPointConnection")]}
+        cls.groups = {g.Name: g for g in IFC.by_type("IfcStructuralLoadGroup")}
+        cls.bearing_rows = {r["bearing"]: r for r in rows("bearing_reactions.csv")}
+
+    @staticmethod
+    def vertex(obj):
+        return obj.Representation.Representations[0].Items[0]
+
+    @staticmethod
+    def edge(m):
+        return m.Representation.Representations[0].Items[0]
+
+    def activities(self, group):
+        return [o for rel in self.groups[group].IsGroupedBy for o in rel.RelatedObjects]
+
+    def test_two_staged_models_serve_the_bridge(self):
+        self.assertEqual(set(self.models), {self.STAGE1, self.STAGE2})
+        for m in self.models.values():
+            self.assertEqual(m.PredefinedType, "LOADING_3D")
+            served = [b for rel in m.ServicesBuildings for b in rel.RelatedBuildings]
+            self.assertEqual([b.is_a() for b in served], ["IfcBridge"])
+        units = {u.UnitType: u for u in IFC.by_type("IfcUnitAssignment")[0].Units}
+        self.assertEqual(units["FORCEUNIT"].Name, "NEWTON")
+        self.assertIn("LINEARFORCEUNIT", units)
+
+    def test_counts(self):
+        n_g = sum(1 for e in R["els"] if e.cls == "girder")
+        lines = len(rows("girder_lines.csv"))
+        self.assertEqual(len(self.items[self.STAGE1]["members"]), 3 * n_g)
+        self.assertEqual(len(self.items[self.STAGE1]["points"]), 4 * n_g)
+        self.assertEqual(len(self.items[self.STAGE2]["members"]), 12 * lines)
+        self.assertEqual(len(self.items[self.STAGE2]["points"]), 13 * lines)
+
+    def test_members_and_connections_share_their_vertices(self):
+        for name, it in self.items.items():
+            for m in it["members"]:
+                rels = m.ConnectedBy
+                self.assertEqual(len(rels), 2, m.Name)
+                e = self.edge(m)
+                self.assertEqual({self.vertex(r.RelatedStructuralConnection).id() for r in rels},
+                                 {e.EdgeStart.id(), e.EdgeEnd.id()}, m.Name)
+
+    def test_boundary_conditions_only_at_the_supports(self):
+        temps = {e.eid for e in R["els"] if e.cls == "temp_support"}
+        perm = {e.eid for e in R["els"] if e.cls == "bearing"}
+        for name, want in ((self.STAGE1, temps | {b for b in perm if not b.startswith("B-P")}), (self.STAGE2, perm)):
+            held = {p.Description: p for p in self.items[name]["points"] if p.AppliedCondition is not None}
+            self.assertEqual(set(held), want)
+            free = [p for p in self.items[name]["points"] if p.AppliedCondition is None]
+            self.assertTrue(all(p.Description is None for p in free))
+            for p in held.values():
+                c = p.AppliedCondition
+                self.assertTrue(c.TranslationalStiffnessZ.wrappedValue and c.TranslationalStiffnessY.wrappedValue)
+        fixed_x = Counter(p.Name.rsplit("-", 1)[0] for p in self.items[self.STAGE2]["points"]
+                          if p.AppliedCondition is not None and p.AppliedCondition.TranslationalStiffnessX.wrappedValue)
+        self.assertEqual(len(fixed_x), len(rows("girder_lines.csv")))           # 每条梁位线恰好一个纵向固定点
+        self.assertTrue(all(v == 1 for v in fixed_x.values()))
+
+    def projected_total(self, group):
+        tot = 0.0
+        for a in self.activities(group):
+            if a.is_a("IfcStructuralCurveAction"):
+                self.assertEqual(a.ProjectedOrTrue, "PROJECTED_LENGTH")
+                e = a.Representation.Representations[0].Items[0]
+                p, q = e.EdgeStart.VertexGeometry.Coordinates, e.EdgeEnd.VertexGeometry.Coordinates
+                tot += -a.AppliedLoad.LinearForceZ * math.hypot(q[0] - p[0], q[1] - p[1])
+            else:
+                tot += -a.AppliedLoad.ForceZ
+        return tot / 1000.0
+
+    def test_loads_add_up_to_the_computed_totals(self):
+        lines = rows("girder_lines.csv")
+        temps = [r for r in self.bearing_rows.values() if r["kind"] == "临时支座"]
+        for group, want, n in (("一期恒载", sum(float(r["G1_kN"]) for r in lines), len(lines)),
+                               ("二期恒载", sum(float(r["G2_kN"]) for r in lines), len(lines)),
+                               ("体系转换：拆除临时支座", sum(float(r["R_G1"]) for r in temps), len(temps))):
+            self.assertLess(abs(self.projected_total(group) - want), 0.05 * n + 1e-6, group)   # 表里保留 1 位小数
+        self.assertEqual(self.groups["体系转换：拆除临时支座"].ActionSource, "PROPPING")
+        self.assertEqual(self.groups["二期恒载"].ActionSource, "COMPLETION_G1")
+
+    def test_reactions_equal_the_bearing_table(self):
+        got = {}
+        for res in IFC.by_type("IfcStructuralResultGroup"):
+            for rel in res.IsGroupedBy:
+                for r in rel.RelatedObjects:
+                    got[(res.Name, r.Name)] = r.AppliedLoad.ForceZ / 1000.0
+        for bid, row in self.bearing_rows.items():
+            if row["kind"] == "临时支座" or not bid.startswith("B-P"):
+                self.assertLess(abs(got[("阶段一支座反力", "R1-" + bid)] - float(row["R_G1"])), 0.05 + 1e-9, bid)
+            if row["kind"] != "临时支座":
+                self.assertLess(abs(got[("支座反力 Rck", "RCK-" + bid)] - float(row["Rck"])), 0.05 + 1e-9, bid)
+        stage1 = sum(v for (g, _), v in got.items() if g == "阶段一支座反力")
+        self.assertLess(abs(stage1 - self.projected_total("一期恒载")), 1e-6 * stage1)    # IFC 里自己也平衡
+
+    def test_stage_one_members_lie_on_their_girder_axis(self):
+        from bridge.structure import polygon_props
+        dz = polygon_props(C.T_SECTION)[1]                   # 预制截面形心在梁顶以下
+        n_checked = 0
+        for rel in IFC.by_type("IfcRelAssignsToProduct"):
+            g = rel.RelatingProduct
+            if not g.is_a("IfcBeam") or g.PredefinedType != "T_BEAM":
+                continue
+            e = BY[g.Name]
+            p0, p1 = e.params["p0"], e.params["p1"]
+            d = [p1[i] - p0[i] for i in range(3)]
+            n = math.sqrt(sum(x * x for x in d))
+            for m in rel.RelatedObjects:
+                if not m.Name.startswith("S1-"):
+                    continue
+                for v in (self.edge(m).EdgeStart, self.edge(m).EdgeEnd):
+                    q = v.VertexGeometry.Coordinates
+                    w = [q[0] - p0[0], q[1] - p0[1], q[2] - dz - p0[2]]
+                    t = sum(w[i] * d[i] for i in range(3)) / n
+                    self.assertLess(math.sqrt(max(0.0, sum(x * x for x in w) - t * t)), 1e-6, m.Name)
+                    self.assertTrue(-1e-6 <= t <= n + 1e-6, m.Name)
+                n_checked += 1
+        self.assertEqual(n_checked, len(self.items[self.STAGE1]["members"]))
+
+    def test_every_analytical_object_belongs_to_one_product(self):
+        owner = Counter()
+        for rel in IFC.by_type("IfcRelAssignsToProduct"):
+            if rel.RelatingProduct.is_a("IfcElement"):
+                for o in rel.RelatedObjects:
+                    if o.is_a("IfcStructuralItem"):
+                        owner[o.id()] += 1
+        members = [m for it in self.items.values() for m in it["members"]]
+        held = [p for it in self.items.values() for p in it["points"] if p.AppliedCondition is not None]
+        self.assertTrue(all(owner[o.id()] == 1 for o in members + held))
+
+    def test_structural_psets_equal_the_tables(self):
+        g_rows = {r["girder"]: r for r in rows("girder_forces.csv")}
+        n = 0
+        for p in IFC.by_type("IfcElement"):
+            ps = UE.get_pset(p, "BridgeBIM_Structural")
+            if p.Name in g_rows:
+                r = g_rows[p.Name]
+                self.assertEqual(ps["DesignMomentSaggingMax_kNm"], float(r["M_ud_pos"]))
+                self.assertEqual(ps["DesignMomentHoggingMin_kNm"], float(r["M_ud_neg"]))
+                self.assertEqual(ps["DeflectionRatio"], float(r["deflection_ratio"]))
+                n += 1
+            elif p.Name in self.bearing_rows:
+                r = self.bearing_rows[p.Name]
+                key, col = ("ReactionFirstStage_kN", "R_G1") if r["kind"] == "临时支座" else ("Rck_kN", "Rck")
+                self.assertEqual(ps[key], float(r[col]))
+                if r["kind"] != "临时支座":
+                    self.assertEqual(ps["Utilisation"], float(r["utilisation"]))
+                n += 1
+            else:
+                self.assertIsNone(ps, p.Name)
+        self.assertEqual(n, len(g_rows) + len(self.bearing_rows))
 
 
 if __name__ == "__main__":

@@ -18,8 +18,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.9"
-      - name: Alignment, model (with a counterexample per check) and schedule tests — stdlib only
-        run: python -m unittest tests.test_alignment tests.test_model tests.test_schedule -v
+      - name: Alignment, model, schedule and structure tests (a counterexample per check) — stdlib only
+        run: python -m unittest tests.test_alignment tests.test_model tests.test_schedule tests.test_structure -v
       - name: data/ is exactly what the model computes
         run: python scripts/build_data.py --check
 
@@ -32,7 +32,9 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt
-      - name: Full test suite (.3dm ↔ CSV ↔ IFC, geometry engine, alignment kernel, 4D, schema)
+      - name: Full test suite (.3dm ↔ CSV ↔ IFC, geometry engine, alignment kernel, 4D, schema, OpenSees cross-check)
+        env:
+          REQUIRE_OPENSEES: "1"          # 装不上 / 加载失败就报错，不许把 OpenSees 互核静默跳过
         run: python -m pytest tests -v
       - name: IFC equals a fresh export
         run: python scripts/export_ifc.py --check
