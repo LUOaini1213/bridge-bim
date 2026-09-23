@@ -1053,5 +1053,5 @@ except Exception:
 finally:
     DOC.Modified = False
     os.makedirs(os.path.join(ROOT, "model"), exist_ok=True)
-    with open(os.path.join(ROOT, "model", "build_log.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(ROOT, "model", "build_log.json"), "w", encoding="utf-8", newline="\n") as f:
         json.dump(LOG, f, ensure_ascii=False, indent=1)
