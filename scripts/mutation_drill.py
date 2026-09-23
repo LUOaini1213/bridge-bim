@@ -19,6 +19,7 @@ import test_structure as T            # noqa: E402
 
 _k, _m, _fe, _lane, _w, _lever, _inf = (ST.Beam._k, ST.Beam._m, ST.Beam._fixed_end, ST.lane_effects, ST._weights,
                                         ST.lever_eta, ST.Beam.influence)
+_neg = ST.negative_moment_mode
 
 
 def k_bad(self, e):
@@ -51,6 +52,10 @@ def lever_bad(secs, k, e):
     return max(0.0, _lever(secs, k, e))
 
 
+def neg_mode_bad(n_spans):
+    return 2
+
+
 def influence_bad(self):
     IM, IV, IR, IW = _inf(self)
     return IM, [[-v for v in row] for row in IV], IR, IW
@@ -64,6 +69,7 @@ MUTANTS = [
     ("剪力的 m 沿跨不变（没有 m0 → mc 过渡）", ST, "_weights", weights_bad),
     ("杠杆原理法把负值截成 0", ST, "lever_eta", lever_bad),
     ("剪力影响线反号", ST.Beam, "influence", influence_bad),
+    ("负弯矩冲击系数取第二阶频率", ST, "negative_moment_mode", neg_mode_bad),
 ]
 CLASSES = [T.Sections, T.Distribution, T.BeamClosedForm, T.CodeFunctions, T.Bridge, T.OpenSeesCrossCheck]
 

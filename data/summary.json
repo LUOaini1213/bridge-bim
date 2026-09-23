@@ -30,11 +30,15 @@
  "f1_max": 3.459,
  "mu_pos_min": 0.1899,
  "mu_pos_max": 0.2036,
- "Mud_pos_max": 9941.9,
- "Mud_neg_min": -6377.2,
- "Vud_max": 1998.3,
- "deflection_ratio_max": 0.234,
- "bearing_util_end_max": 0.817,
- "bearing_util_cont_max": 0.831,
- "bearing_R_ud_min": 495.9
+ "mu_neg_min": 0.3182,
+ "mu_neg_max": 0.331,
+ "cw": 1.909,
+ "beta": 0.9626,
+ "Mud_pos_max": 10023.1,
+ "Mud_neg_min": -6731.5,
+ "Vud_max": 2002.6,
+ "deflection_ratio_max": 0.238,
+ "bearing_util_end_max": 0.819,
+ "bearing_util_cont_max": 0.833,
+ "bearing_R_ud_min": 487.5
 }

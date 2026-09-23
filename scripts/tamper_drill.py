@@ -73,7 +73,7 @@ CHECKS = {
 
 def drills():
     def bearings(d):
-        edit(os.path.join(d, "data", "bearings.csv"), "131.3037,0.1507", "131.3037,0.1607")
+        edit(os.path.join(d, "data", "bearings.csv"), "131.2967,0.1507", "131.2967,0.1607")
 
     def girders(d):
         edit(os.path.join(d, "data", "girders.csv"), "G-L06-3,L,6,3,2,中跨,C,C,7.000,28.78",
@@ -107,7 +107,7 @@ def drills():
         edit(os.path.join(d, "README.md"), "| 16 | 21 | 50 | 0 | 34 | 15 | 是 |", "| 16 | 21 | 50 | 0 | 33 | 15 | 是 |")
 
     def reaction(d):
-        edit(os.path.join(d, "data", "bearing_reactions.csv"), ",0.1903,2403.4,", ",0.1903,2404.4,")
+        edit(os.path.join(d, "data", "bearing_reactions.csv"), ",0.1903,2408.9,", ",0.1903,2409.9,")
 
     def ifc_reaction(d):
         p = os.path.join(d, "model", "bridge_bim.ifc")
@@ -122,7 +122,7 @@ def drills():
         edit_3dm(os.path.join(d, "model", "bridge_bim.3dm"), "G-L01-1", "M_ud_pos", "9701.4")
 
     def readme_structure(d):
-        edit(os.path.join(d, "README.md"), "| 1 / 5 号（边梁） | 0.46662 | 0.8541 |", "| 1 / 5 号（边梁） | 0.46662 | 0.8542 |")
+        edit(os.path.join(d, "README.md"), "| 1 / 5 号（边梁） | 0.46662 | 0.8693 |", "| 1 / 5 号（边梁） | 0.46662 | 0.8694 |")
 
     return [
         ("垫石标高表改一个垫石高 1 cm", bearings, ["data", "ifc_data", "readme"]),

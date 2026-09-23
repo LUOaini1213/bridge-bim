@@ -221,6 +221,41 @@ class BeamClosedForm(Close):
         lam = 3.9266023120479                            # tan λ = tanh λ 的第一个根（固结-铰支）
         self.assertLess(rel(f2 / f1, (lam / math.pi) ** 2), 1e-6)
 
+    @staticmethod
+    def synthetic_line(n_spans, per=60, L=30.0):
+        xs = grid(L * n_spans, per * n_spans)
+        sup = [per * k for k in range(n_spans + 1)]
+        return {"xs": xs, "EI2": [EI] * (len(xs) - 1), "perm": [{"node": s} for s in sup],
+                "spans": [(xs[a], xs[b]) for a, b in zip(sup, sup[1:])], "span_nodes": list(zip(sup, sup[1:])),
+                "sec": {"I": EI / C.E_C50}}
+
+    def test_equivalent_simple_beam_matches_the_textbook_table(self):
+        """等代简支梁刚度修正系数 C_w（教材表 2-6-4）：两跨等跨 1.391；三跨等跨边跨 1.429、中跨 1.818；
+        教材例 2-6-1（4×30 m 先简支后连续）取边跨 1.432、中跨 1.860。"""
+        c2 = ST.span_stiffness_ratios(self.synthetic_line(2))
+        c3 = ST.span_stiffness_ratios(self.synthetic_line(3))
+        c4 = ST.span_stiffness_ratios(self.synthetic_line(4))
+        for got, want in ((c2[0], 1.391), (c3[0], 1.429), (c3[1], 1.818), (c4[0], 1.432), (c4[1], 1.860)):
+            self.assertAlmostEqual(got, want, delta=0.0015)
+        for c in (c2, c3, c4):
+            self.close(c[0], c[-1], 1e-9)                   # 对称
+
+    def test_equivalent_simple_beam_beta(self):
+        secs = ST.girder_sections()
+        sum_ai2 = sum(x["a"] ** 2 * x["I"] for x in secs.values())
+        cw = 1.9
+        beta = 1 / (1 + 0.4 * C.SPAN ** 2 * sum(x["IT"] for x in secs.values()) / (12 * cw * sum_ai2))
+        self.close(ST.distribution(cw=cw)[1], beta, 1e-15)
+        self.assertGreater(ST.distribution(cw=cw)[2][1]["mc_max"], ST.distribution()[2][1]["mc_max"])
+
+    def test_three_span_frequencies_match_the_literature(self):
+        """三跨等跨连续梁前三阶竖弯频率比 π² : 3.55² : 4.3²（王荣霞等 2018 引的理论值，文中取两位有效数字）。"""
+        b = ST.Beam(grid(90.0, 180), EI, [0, 60, 120, 180], mass=4.0)
+        f = b.frequencies(3)
+        self.assertAlmostEqual(f[1] / f[0], 3.55 ** 2 / math.pi ** 2, delta=0.01)
+        self.assertAlmostEqual(f[2] / f[0], 4.3 ** 2 / math.pi ** 2, delta=0.01)
+        self.assertEqual(ST.negative_moment_mode(3), 3)
+
     def test_inner_mass_on_a_node_equals_a_nodal_mass(self):
         xs = grid(30.0, 30)
         a = ST.Beam(xs, EI, [0, 30], mass=3.0, point_mass={12: 5.0})
@@ -274,7 +309,7 @@ class CodeFunctions(unittest.TestCase):
 
 
 # ====================================================================== 全桥
-class Bridge(unittest.TestCase):
+class Bridge(Close):
     @classmethod
     def setUpClass(cls):
         cls.els, _ = M.build()
@@ -341,6 +376,19 @@ class Bridge(unittest.TestCase):
                 plan = b["plan"]
                 need = (("circle", b["size_req"]) if plan[0] == "circle" else ("rect", b["size_req"], plan[2]))
                 self.assertAlmostEqual(b["Rck"] / ST.effective_area(need) / 1000.0, C.SIGMA_C, places=9)
+
+    def test_negative_moment_uses_the_top_of_the_first_band(self):
+        for x in self.res["lines"]:
+            n = len(x["L"]["spans"])
+            self.assertEqual(x["neg_mode"], n)
+            self.assertEqual(x["f_neg"], x["freqs"][n - 1])
+            self.assertGreater(x["f_neg"] / x["f1"], 1.9)          # 四跨一联：约 2.0 f1
+            self.close(x["mu_neg"], ST.impact(x["f_neg"]), 1e-15)
+
+    def test_continuous_stage_distribution_uses_the_largest_cw(self):
+        self.assertEqual(self.res["cw"], max(max(x["cw"]) for x in self.res["lines"]))
+        self.close(self.res["beta"], ST.torsion_beta(self.res["secs"], C.SPAN, self.res["cw"]), 1e-15)
+        self.assertGreater(self.res["beta"], self.res["beta_simple"])
 
     def test_decks_are_not_mirror_images(self):
         """曲线内外侧梁长不同：左右幅对应梁位线的内力不应完全相等（防止两幅误用同一份几何）。"""
@@ -510,9 +558,9 @@ class OpenSeesCrossCheck(unittest.TestCase):
         ne = len(L["xs"]) - 1
         mass = [(L["w1"][e] + L["w2"][e] + L["wj"][e]) / ST.G_ACC for e in range(ne)]
         supports = [b["node"] for b in L["perm"]]
-        ours = ST.Beam(L["xs"], L["EI2"], supports, mass=mass).frequencies(2)
+        ours = ST.Beam(L["xs"], L["EI2"], supports, mass=mass).frequencies(4)
         self.build(L["xs"], L["EI2"], supports, mass)
-        lam = ops.eigen("-fullGenLapack", 2)
+        lam = ops.eigen("-fullGenLapack", 4)
         theirs = [math.sqrt(v) / (2 * math.pi) for v in lam]
         for a, b in zip(ours, theirs):
             self.assertLess(rel(a, b), 1e-9)

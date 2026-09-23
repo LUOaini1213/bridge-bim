@@ -26,7 +26,7 @@ import rhino3dm                # noqa: E402
 
 from bridge import alignment as AL, config as C, model as M   # noqa: E402
 
-EXPECTED = 185
+EXPECTED = 188
 README = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
 
 
@@ -256,7 +256,15 @@ def main():
     pks = [float(r["Pk_kN"]) for r in LINES]
     claim("结构：车道荷载", r"qk = ([\d.]+) kN/m，Pk = 2\(L0 \+ 130\) = ([\d.]+)–([\d.]+) kN",
           ["%g" % C.Q_K, "%.2f" % min(pks), "%.2f" % max(pks)])
-    claim("结构：β", r"抗扭修正 β = ([\d.]+)", [LATERAL[1]["beta"]])
+    claim("结构：等代简支梁", r"两跨等跨 ([\d.]+)、三跨等跨 ([\d.]+) / ([\d.]+)，与教材表 2-6-4 一致；本桥最大 ([\d.]+)\s*\n（中跨），"
+          r"以 C_w·I 代入后抗扭修正系数 β 由 ([\d.]+) 变为 ([\d.]+)",
+          list(re.search(r"\(c2\[0\], ([\d.]+)\), \(c3\[0\], ([\d.]+)\), \(c3\[1\], ([\d.]+)\)", T_STRUCT).groups())
+          + ["%.3f" % SUMMARY["cw"], LATERAL[1]["beta_simple"], LATERAL[1]["beta"]])
+    ratios = sorted(float(r["f_neg_Hz"]) / float(r["f1_Hz"]) for r in LINES)
+    modes = {r["neg_mode"] for r in LINES}
+    claim("结构：负弯矩冲击系数", r"四跨一联取第(\S)阶，约 ([\d.]+) f1），μ = ([\d.]+)–([\d.]+)——",
+          ["四" if modes == {"4"} else "?", "%.1f" % ratios[len(ratios) // 2],
+           "%.4f" % SUMMARY["mu_neg_min"], "%.4f" % SUMMARY["mu_neg_max"]])
     claim("结构：频率与冲击", r"f1 = ([\d.]+)–([\d.]+) Hz，μ = ([\d.]+)–([\d.]+)；",
           ["%.3f" % SUMMARY["f1_min"], "%.3f" % SUMMARY["f1_max"], "%.4f" % SUMMARY["mu_pos_min"], "%.4f" % SUMMARY["mu_pos_max"]])
     for label, pos in (("1 / 5 号（边梁）", 1), ("2 / 4 号", 2), ("3 号", 3)):
@@ -280,7 +288,7 @@ def main():
     perm_detail = detail["连续墩永久支座全在现浇连续段下（距预制梁端 ≥ %s m）" % clear_need]
     claim("支座选型", r"伸缩端 Rck 最大 ([\d.]+) kN、\s*\n需要直径 ([\d.]+) m，取 (φ\d+)；连续墩 Rck 最大 ([\d.]+) kN，圆形要 φ(\d+)，"
           r"按 (\d+) mm 进级是 φ(\d+)——可连续端梁端离墩中心线\s*\n最近只有 ([\d.]+) m，φ\d+ 的边缘离梁端只剩 ([\d.]+) m，"
-          r"正好卡在检查下限上。所以用矩形 (\d+) × (\d+)（顺桥向 × 横桥向），\s*\n顺桥向离梁端 ([\d.]+) m。σc = (\d+) MPa 是【假设】",
+          r"正好卡在检查下限上。所以用矩形 (\d+) × (\d+)（顺桥向 × 横桥向），\s*\n顺桥向离梁端 ([\d.]+) m。σc = (\d+) MPa：JTG 3362-2018",
           ["%.1f" % max(float(r["Rck"]) for r in ends), "%.3f" % max(float(r["size_required_m"]) for r in ends),
            "φ%d" % round(C.BEARING_D * 1000), "%.1f" % rck_c, "%d" % round(circle * 1000), step_d, next_d,
            "%.2f" % C.CONT_HALF_MIN, "%.2f" % (C.CONT_HALF_MIN - next_d / 2000.0),
@@ -294,7 +302,19 @@ def main():
            test_const(T_STRUCT, r'"STIFF_FACTOR", ([\d.]+)\)'),
            "%d" % round(1000 * float(test_const(T_STRUCT, r'params\["w"\] = ([\d.]+)'))),
            test_const(T_STRUCT, r'"UNIT_RC", ([\d.]+)\)')])
-    claim("OpenSees 互核", r"前两阶频率逐项差 < (1e-\d+)（相对）", [test_const(T_STRUCT, r"\), (1e-\d+) \* scale_m\)")])
+    claim("OpenSees 互核", r"前(\S)阶频率逐项差 < (1e-\d+)（相对）",
+          [{"2": "两", "4": "四"}.get(test_const(T_STRUCT, r'ops\.eigen\("-fullGenLapack", (\d+)\)'), "?"),
+           test_const(T_STRUCT, r"\), (1e-\d+) \* scale_m\)")])
+    ae_end = math.pi * (C.BEARING_D - 2 * C.BEARING_COVER) ** 2 / 4
+    ae_cont = (C.BEARING_CONT_A - 2 * C.BEARING_COVER) * (C.BEARING_CONT_B - 2 * C.BEARING_COVER)
+    claim("支座规格表", r"GYZ d(\d+)、GJZ (\d+)×(\d+) 的最大承压力 (\d+) kN、(\d+) kN，正好是 (\d+) MPa × 加劲钢板面积\s*\n"
+          r"（每边扣 (\d+) mm 保护层）。橡胶层厚度取同一系列里的一档（(φ\d+×\d+)、(\d+×\d+×\d+)）",
+          ["%d" % round(C.BEARING_D * 1000), "%d" % round(C.BEARING_CONT_A * 1000), "%d" % round(C.BEARING_CONT_B * 1000),
+           "%d" % round(ae_end * C.SIGMA_C * 1000), "%d" % round(ae_cont * C.SIGMA_C * 1000), "%d" % C.SIGMA_C,
+           "%d" % round(C.BEARING_COVER * 1000), "φ%d×%d" % (round(C.BEARING_D * 1000), round(C.BEARING_T * 1000)),
+           "%d×%d×%d" % (round(C.BEARING_CONT_A * 1000), round(C.BEARING_CONT_B * 1000), round(C.BEARING_CONT_T * 1000))])
+    half = max(float(r["length_m"]) for r in LINES) / 2
+    claim("范围：支座位移", r"伸缩端离一联的不动点约 (\d+) m", ["%d" % (round(half / 10.0) * 10)])
     claim("变异演练", r"对求解器做 (\d+) 种变异", [mutants()])
     n_temp = sum(1 for r in REACTIONS if r["kind"] == "临时支座")
     claim("结果回写", r"(\d+) 片预制梁和 (\d+) 个支座（永久 (\d+) \+ 临时 (\d+)）",

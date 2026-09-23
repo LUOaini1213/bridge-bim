@@ -22,16 +22,20 @@
   车辆横向按轮距 1.8 m、车距 1.3 m、距路缘 0.5 m 布置，1–3 列逐一枚举并乘横向车道布载系数。
   每片梁取两个极端：分到最多（mc、m0），分到最少（车在另一侧时偏心压力法给出负值）。
   弯矩、挠度全跨用 mc；剪力与支座反力的 m 在支点取 m0、到 1/4 跨（第一道中横隔板）线性过渡为 mc。
-  连续梁阶段沿用这组系数，β 按支承线间距算【假设】。
+  连续梁阶段按教材《桥梁工程》第六章的「等代简支梁」：按跨中挠度相等求抗弯刚度修正系数
+  C_w = w简支 / w连续（这里直接用本仓的梁单元算：两跨等跨 1.391，三跨 1.429 / 1.818，与教材表 2-6-4
+  一致），以 C_w·I 代入 β，抗扭惯性矩不修正；全桥偏安全地取最大的 C_w（中跨）统一算 mc。
 - 纵向：平面欧拉梁单元直接刚度法（Hermite 形函数、一致质量矩阵），半带宽 3 的带状分解。
   施工阶段：① 一期恒载由每片预制梁两端支承（伸缩端永久支座、连续端临时支座）的简支梁承担；
   ② 体系转换：拆临时支座等于把它们的反力反向加到以永久支座为支承的整联连续梁上；
   ③ 二期恒载与汽车荷载作用于连续梁。
 - 汽车荷载（公路-I级车道荷载）：逐节点求影响线，均布荷载布满同号区段，集中荷载放在最大竖标处；
   计算剪力与支座反力时集中荷载乘 1.2。Pk 按该联最大计算跨径取【假设：规范没写多跨连续梁取哪一跨】。
-- 冲击系数 μ 由结构基频 f 定。对每条梁位线的整联连续梁（组合截面，一、二期恒载质量）求前两阶
-  竖弯频率：正弯矩、剪力、支座反力用 f1；负弯矩改用 f2（μ 随 f 增大，偏安全）【假设：规范条文说明
-  对连续梁有专门规定，在线版缺这一段，没核到原文】。
+- 冲击系数 μ 由结构基频 f 定。对每条梁位线的整联连续梁（组合截面，一、二期恒载质量）求竖弯频率：
+  正弯矩、剪力、支座反力用基频 f1；负弯矩用该联第一频带的最高一阶（n 跨一联取第 n 阶，四跨约为 f1 的 2 倍）——
+  一阶振型在中间支点处弯矩为零，高阶振型的最大弯矩就在支点上【假设：按王荣霞等（公路交通科技 2018
+  年第 5 期，引袁向荣 2013）对三跨连续梁取第三阶竖弯频率的做法推广到 n 跨；规范条文说明里的连续梁
+  基频公式没核到原文，不用】。
 - 组合：基本组合 γ0(γG·G + 1.4·(1+μ)·Q)，结构重力有利时 γG 取 1.0；频遇组合 G + 0.7·Q（不计冲击）。
 - 挠度：汽车荷载频遇值（不计冲击）乘挠度长期增长系数 ηθ，刚度 B0 = 0.95·Ec·I，限值 L/600。
 - 支座：Rck 由结构重力与汽车荷载（计入冲击）标准值组合，Ae（加劲钢板面积）≥ Rck/σc（JTG 3362-2018
@@ -154,11 +158,12 @@ def eccentric_eta(secs, beta, k, e):
     return s["I"] / sum_i + beta * e * s["a"] * s["I"] / sum_ai2
 
 
-def torsion_beta(secs, span):
-    """抗扭修正系数 β = 1 / (1 + G l² ΣIT / (12 E Σ aᵢ² Iᵢ))，G = 0.4E（教材式 2-4-50）。"""
+def torsion_beta(secs, span, cw=1.0):
+    """抗扭修正系数 β = 1 / (1 + G l² ΣIT / (12 E Σ aᵢ² Iᵢ))，G = 0.4E（教材式 2-4-48）。
+    连续梁按等代简支梁：抗弯惯性矩乘刚度修正系数 cw，抗扭惯性矩不修正（教材第六章第四节）。"""
     sum_it = sum(s["IT"] for s in secs.values())
     sum_ai2 = sum(s["a"] ** 2 * s["I"] for s in secs.values())
-    return 1.0 / (1.0 + C.G_RATIO * span ** 2 * sum_it / (12.0 * sum_ai2))
+    return 1.0 / (1.0 + C.G_RATIO * span ** 2 * sum_it / (12.0 * cw * sum_ai2))
 
 
 def lever_eta(secs, k, e):
@@ -196,13 +201,14 @@ def wheel_layouts(n_veh, e_lo, e_hi, anchors):
     return [[s + r for r in rel] for s in sorted(starts)]
 
 
-def distribution(span=None):
+def distribution(span=None, cw=1.0):
     """一幅桥的横向分布。返回 (截面, β, {梁位: 系数}, 概况)。系数：
     mc_max / mc_min（修正偏心压力法，分到最多 / 最少，后者 ≤ 0）、m0_max / m0_min（杠杆原理法），
-    rigid_max（β = 1，即不计主梁抗扭，作对照），以及取到各极值的车列数（0 = 不布载）。"""
+    rigid_max（β = 1，即不计主梁抗扭，作对照），以及取到各极值的车列数（0 = 不布载）。
+    cw：等代简支梁的抗弯刚度修正系数（简支梁取 1）。"""
     span = span or C.SPAN
     secs = girder_sections()
-    beta = torsion_beta(secs, span)
+    beta = torsion_beta(secs, span, cw)
     half = C.DECK_WIDTH / 2 - C.BARRIER_W
     lanes = lanes_for_width(2 * half)
     anchors = [s["a"] for s in secs.values()]
@@ -534,6 +540,11 @@ def pk(span):
     return C.PK_SHORT + (C.PK_LONG - C.PK_SHORT) * (span - 5.0) / 45.0
 
 
+def negative_moment_mode(n_spans):
+    """负弯矩冲击系数用的竖弯振型阶数：n 跨一联的第一频带有 n 个振型，取最高那阶（三跨取第三阶，同文献）。"""
+    return n_spans
+
+
 def impact(f):
     """冲击系数 μ（JTG D60-2015 式 4.3.2）。"""
     if f < 1.5:
@@ -802,8 +813,10 @@ def analyse_line(L, coef):
     VRG = [VR1[j] + (Vc[j][0] + V2[j][0] if j < ne else 0.0) for j in range(n)]
     VLG = [VL1[j] + (Vc[j - 1][1] + V2[j - 1][1] if j > 0 else 0.0) for j in range(n)]
     # ---------------------------------------------------------------- 频率与冲击系数
-    f1, f2 = B2.frequencies(2)
-    mu_pos, mu_neg = impact(f1), impact(f2)
+    n_sp = negative_moment_mode(len(L["spans"]))
+    fs = B2.frequencies(max(n_sp, 2))
+    f1, f_neg = fs[0], fs[n_sp - 1]                  # 负弯矩：第一频带最高一阶（n 跨一联的第 n 阶）
+    mu_pos, mu_neg = impact(f1), impact(f_neg)
     # ---------------------------------------------------------------- 汽车荷载影响线加载
     IM, IV, IR, IW = B2.influence()
     L0 = max(b - a for a, b in L["spans"])
@@ -869,7 +882,8 @@ def analyse_line(L, coef):
                       "limit": (b - a) * C.DEFLECTION_LIMIT, "node_m": jm})
     loads = {"G1": sum(g["g1"] + sum(q_["P"] for q_ in g["dia"]) for g in L["girders"]),
              "G2": sum(g["g2"] for g in L["girders"]), "CS": sum(b["cs"] for b in L["perm"])}
-    return {"L": L, "f1": f1, "f2": f2, "mu_pos": mu_pos, "mu_neg": mu_neg, "L0": L0, "Pk": P_m,
+    return {"L": L, "f1": f1, "f_neg": f_neg, "neg_mode": n_sp, "freqs": fs, "mu_pos": mu_pos, "mu_neg": mu_neg,
+            "L0": L0, "Pk": P_m,
             "M1": M1, "Mc": Mc, "M2": M2, "MG": MG, "MQp": MQp, "MQn": MQn, "Mud_p": Mud_p, "Mud_n": Mud_n,
             "Mfd_p": Mfd_p, "Mfd_n": Mfd_n, "VRG": VRG, "VLG": VLG, "VRQ": VRQ, "VLQ": VLQ, "Vud": Vud, "VudR": VudR, "VudL": VudL,
             "Wlong": Wlong, "bearings": bearings, "temps": temps, "spans": spans, "loads": loads,
@@ -877,11 +891,35 @@ def analyse_line(L, coef):
                           "temp": sum(R1[t["id"]] for t in L["temps"])}}
 
 
+def span_stiffness_ratios(L):
+    """等代简支梁的抗弯刚度修正系数：每跨跨中附近的节点上加单位力，C_w = 同跨简支梁在该点的挠度 /
+    连续梁在该点的挠度（教材式 2-6-6：按非简支体系梁与简支梁挠度相等求等代简支梁的抗弯刚度）。"""
+    B = continuous_beam(L, with_mass=False)
+    EI = C.E_C50 * L["sec"]["I"]
+    out = []
+    for (a, b), (ja, jb) in zip(L["spans"], L["span_nodes"]):
+        jm = min(range(ja, jb + 1), key=lambda j: abs(L["xs"][j] - (a + b) / 2))
+        u = B.solve(B.load_vector(None, [(jm, 1.0)]))
+        s1, s2 = L["xs"][jm] - a, b - L["xs"][jm]
+        out.append((s1 * s1 * s2 * s2 / (3.0 * EI * (b - a))) / -u[2 * jm])
+    return out
+
+
 def analyse(els, only=None):
-    """全桥：两幅 × 三联 × 五个梁位 = 30 条梁位线（only 见 girder_lines）。"""
-    secs, beta, coef, info = distribution()
-    lines = [analyse_line(L, coef) for L in girder_lines(els, only)]
-    return {"secs": secs, "beta": beta, "coef": coef, "info": info, "lines": lines}
+    """全桥：两幅 × 三联 × 五个梁位 = 30 条梁位线（only 见 girder_lines）。
+    连续梁阶段的横向分布用全桥最大的 C_w（偏安全，教材例 2-6-1 的做法）。"""
+    lines_L = girder_lines(els, only)
+    cws = [span_stiffness_ratios(L) for L in lines_L]
+    cw = max(max(c) for c in cws)
+    secs, beta, coef, info = distribution(cw=cw)
+    beta_simple = distribution()[1]
+    lines = []
+    for L, c in zip(lines_L, cws):
+        x = analyse_line(L, coef)
+        x["cw"] = c
+        lines.append(x)
+    return {"secs": secs, "beta": beta, "beta_simple": beta_simple, "cw": cw, "cw_min": min(min(c) for c in cws),
+            "coef": coef, "info": info, "lines": lines}
 
 
 # ====================================================================== 检查（与 checks.py 同格式：名称、是否通过、实测说明）

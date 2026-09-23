@@ -51,7 +51,7 @@
   "group": "模型",
   "name": "临时支座高 ≥ 0.10 m",
   "pass": true,
-  "detail": "180 个，0.235 m（TS-R01-2b）– 0.263 m（TS-R02-1a）"
+  "detail": "180 个，0.226 m（TS-R01-2b）– 0.254 m（TS-R02-1a）"
  },
  {
   "group": "模型",
@@ -69,7 +69,7 @@
   "group": "模型",
   "name": "墩盖梁底高出地面（桥台埋入路堤，不在此列）",
   "pass": true,
-  "detail": "最小 1.29 m（CAP-P01-L）"
+  "detail": "最小 1.30 m（CAP-P01-L）"
  },
  {
   "group": "模型",
@@ -147,18 +147,18 @@
   "group": "上部结构",
   "name": "汽车荷载长期挠度 ≤ L/600",
   "pass": true,
-  "detail": "最大 11.7 mm / 限值 50.2 mm = 0.23（R 幅第 8 跨 1 号梁）"
+  "detail": "最大 12.0 mm / 限值 50.2 mm = 0.24（R 幅第 8 跨 1 号梁）"
  },
  {
   "group": "上部结构",
   "name": "支座平均压应力 ≤ 10 MPa",
   "pass": true,
-  "detail": "150 个永久支座，最大 8.31 MPa = 0.83 σc（B-P05-R1，Rck 2403 kN）"
+  "detail": "150 个永久支座，最大 8.33 MPa = 0.83 σc（B-P05-R1，Rck 2409 kN）"
  },
  {
   "group": "上部结构",
   "name": "基本组合下支座不脱空",
   "pass": true,
-  "detail": "最小 496 kN（B-L09-5a：恒载 597 kN，汽车最小 -60 kN）"
+  "detail": "最小 488 kN（B-L09-5a：恒载 597 kN，汽车最小 -65 kN）"
  }
 ]

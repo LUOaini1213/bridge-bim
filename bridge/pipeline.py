@@ -42,7 +42,8 @@ def lateral_rows(r):
         out.append(OrderedDict([
             ("pos", k), ("offset_m", "%.2f" % sec["a"]), ("A_precast_m2", "%.4f" % sec["A0"]),
             ("I_precast_m4", "%.5f" % sec["I0"]), ("A_composite_m2", "%.4f" % sec["A"]), ("I_composite_m4", "%.5f" % sec["I"]),
-            ("IT_m4", "%.5f" % sec["IT"]), ("I_joint_m4", "%.5f" % sec["Ij"]), ("beta", "%.4f" % s["beta"]),
+            ("IT_m4", "%.5f" % sec["IT"]), ("I_joint_m4", "%.5f" % sec["Ij"]),
+            ("beta_simple", "%.4f" % s["beta_simple"]), ("Cw", "%.3f" % s["cw"]), ("beta", "%.4f" % s["beta"]),
             ("mc_max", "%.4f" % c["mc_max"]), ("mc_max_lanes", c["mc_max_lanes"]),
             ("mc_min", "%.4f" % c["mc_min"]), ("mc_min_lanes", c["mc_min_lanes"]),
             ("m0_max", "%.4f" % c["m0_max"]), ("m0_max_lanes", c["m0_max_lanes"]), ("m0_min", "%.4f" % c["m0_min"]),
@@ -59,7 +60,9 @@ def line_rows(r):
         out.append(OrderedDict([
             ("deck", L["deck"]), ("unit", L["unit"]), ("line", L["line"]), ("spans", "%d–%d" % L["spans_k"]),
             ("length_m", "%.3f" % L["xs"][-1]), ("elements", len(L["xs"]) - 1), ("L0_max_m", "%.3f" % x["L0"]),
-            ("Pk_kN", "%.2f" % x["Pk"]), ("f1_Hz", "%.4f" % x["f1"]), ("f2_Hz", "%.4f" % x["f2"]),
+            ("Pk_kN", "%.2f" % x["Pk"]), ("Cw_end", "%.3f" % min(x["cw"][0], x["cw"][-1])),
+            ("Cw_mid", "%.3f" % max(x["cw"][1:-1] or x["cw"])), ("f1_Hz", "%.4f" % x["f1"]),
+            ("f_neg_Hz", "%.4f" % x["f_neg"]), ("neg_mode", x["neg_mode"]),
             ("mu_pos", "%.4f" % x["mu_pos"]), ("mu_neg", "%.4f" % x["mu_neg"]),
             ("G1_kN", "%.1f" % x["loads"]["G1"]), ("G2_kN", "%.1f" % x["loads"]["G2"]),
             ("continuity_kN", "%.1f" % x["loads"]["CS"]), ("Mud_pos_max_kNm", "%.1f" % max(x["Mud_p"])),
@@ -144,7 +147,8 @@ def structure_summary(r):
     return OrderedDict([
         ("structure_lines", len(ls)), ("f1_min", round(min(x["f1"] for x in ls), 3)),
         ("f1_max", round(max(x["f1"] for x in ls), 3)), ("mu_pos_min", round(min(x["mu_pos"] for x in ls), 4)),
-        ("mu_pos_max", round(max(x["mu_pos"] for x in ls), 4)), ("Mud_pos_max", round(max(max(x["Mud_p"]) for x in ls), 1)),
+        ("mu_pos_max", round(max(x["mu_pos"] for x in ls), 4)), ("mu_neg_min", round(min(x["mu_neg"] for x in ls), 4)),
+        ("mu_neg_max", round(max(x["mu_neg"] for x in ls), 4)), ("cw", round(s["cw"], 3)), ("beta", round(s["beta"], 4)), ("Mud_pos_max", round(max(max(x["Mud_p"]) for x in ls), 1)),
         ("Mud_neg_min", round(min(min(x["Mud_n"]) for x in ls), 1)), ("Vud_max", round(max(max(x["Vud"]) for x in ls), 1)),
         ("deflection_ratio_max", round(max(sp["w"] / sp["limit"] for x in ls for sp in x["spans"]), 3)),
         ("bearing_util_end_max", round(max(b["sigma"] for b in bs if b["kind"] == "end") / C.SIGMA_C, 3)),
