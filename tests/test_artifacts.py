@@ -541,6 +541,29 @@ class IfcStructural(unittest.TestCase):
                 self.assertIsNone(ps, p.Name)
         self.assertEqual(n, len(g_rows) + len(self.bearing_rows))
 
+    def test_bearing_movements_equal_the_design_table(self):
+        """永久支座的位移与验算结果：IFC 属性集逐个等于 data/bearing_design.csv；伸缩端是四氟滑板（有行程、没有剪切
+        利用率），连续墩是普通板式（有剪切与抗滑利用率）。"""
+        d_rows = {r["bearing"]: r for r in rows("bearing_design.csv")}
+        seen = 0
+        for p in IFC.by_type("IfcBearing"):
+            if p.Name not in d_rows:
+                continue
+            r, ps = d_rows[p.Name], UE.get_pset(p, "BridgeBIM_Structural")
+            self.assertEqual(ps["BearingType"], r["type"])
+            self.assertEqual(ps["Contraction_mm"], float(r["contract_mm"]))
+            self.assertEqual(ps["DistanceToFixedPoint_m"], float(r["to_fixed_point_m"]))
+            self.assertEqual(ps["RotationUtilisation"], float(r["util_rotation"]))
+            if r["type"] == "四氟滑板":
+                self.assertEqual(ps["SlideTravel_m"], float(r["slide_travel_m"]))
+                self.assertNotIn("ShearUtilisation", ps)
+            else:
+                self.assertEqual(ps["ShearUtilisation"], float(r["util_shear"]))
+                self.assertEqual(ps["SlipUtilisation"], float(r["util_slip"]))
+                self.assertNotIn("SlideTravel_m", ps)
+            seen += 1
+        self.assertEqual(seen, len(d_rows))
+
 
 if __name__ == "__main__":
     unittest.main()

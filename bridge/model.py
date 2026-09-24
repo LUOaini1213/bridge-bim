@@ -713,14 +713,17 @@ def build():
                 if cont:                                    # 矩形：l 沿支承线（横桥向）、w 顺桥向
                     ba, bb_, bt = C.BEARING_CONT_A, C.BEARING_CONT_B, C.BEARING_CONT_T
                     it["bottom"] = it["top"] - bt
-                    it["size"] = attrs["size"] = "%d×%d×%d" % (round(ba * 1000), round(bb_ * 1000), round(bt * 1000))
+                    attrs.update(type="GJZ", sliding=False)
+                    it["size"] = attrs["size"] = "GJZ %d×%d×%d" % (round(ba * 1000), round(bb_ * 1000), round(bt * 1000))
                     els.append(Element(it["id"], "bearing", name, d, "box",
                                        {"c": (q[0], q[1], it["bottom"]), "dir": n, "l": bb_, "w": ba, "h": bt},
                                        attrs, ba * bb_ * bt))
-                else:
+                else:                                       # 滑板支座：橡胶支座 + 顶面四氟板，厚度含四氟板
                     bd, bt = C.BEARING_D, C.BEARING_T
                     it["bottom"] = it["top"] - bt
-                    it["size"] = attrs["size"] = "φ%d×%d" % (round(bd * 1000), round(bt * 1000))
+                    slide = C.END_BEARING_SLIDING
+                    attrs.update(type="GYZF4" if slide else "GYZ", sliding=slide)
+                    it["size"] = attrs["size"] = "%s φ%d×%d" % (attrs["type"], round(bd * 1000), round(bt * 1000))
                     els.append(Element(it["id"], "bearing", name, d, "cyl",
                                        {"c": (q[0], q[1], it["bottom"]), "r": bd / 2, "h": bt}, attrs,
                                        math.pi * (bd / 2) ** 2 * bt))

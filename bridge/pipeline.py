@@ -27,15 +27,18 @@ def compute(n_beds=None, erect_start=None):
 
 
 def structure(r):
-    """上部结构计算（全桥约 5 s），算一次缓存在 r 里。"""
+    """上部结构计算（全桥约 7 s），算一次缓存在 r 里；支座位移按本次的梁场与架梁计划取龄期。"""
     if "struct" not in r:
-        r["struct"] = ST.analyse(r["els"])
+        s = ST.analyse(r["els"])
+        s["bearing_design"] = ST.bearing_design(s, r["els"], {"ages": ST.bearing_ages(r["rows"])})
+        r["struct"] = s
     return r["struct"]
 
 
 def lateral_rows(r):
     """各梁位的截面特性与荷载横向分布系数（两幅相同）。"""
     s = structure(r)
+    gm = s["info"]["gm"]
     out = []
     for k, sec in s["secs"].items():
         c = s["coef"][k]
@@ -47,7 +50,67 @@ def lateral_rows(r):
             ("mc_max", "%.4f" % c["mc_max"]), ("mc_max_lanes", c["mc_max_lanes"]),
             ("mc_min", "%.4f" % c["mc_min"]), ("mc_min_lanes", c["mc_min_lanes"]),
             ("m0_max", "%.4f" % c["m0_max"]), ("m0_max_lanes", c["m0_max_lanes"]), ("m0_min", "%.4f" % c["m0_min"]),
-            ("mc_no_torsion", "%.4f" % c["rigid_max"]),
+            ("mc_no_torsion", "%.4f" % c["rigid_max"]), ("mc_eccentric", "%.4f" % c["ecc_max"]),
+            ("mc_gm", "%.4f" % c["gm_max"]), ("mc_from", c["mc_max_method"]), ("theta_gm", "%.4f" % gm["theta"]),
+            ("alpha_gm", "%.5f" % gm["alpha"]),
+        ]))
+    return out
+
+
+def bearing_design_rows(r):
+    """永久支座的位移与验算：到不动点的距离、开始受力时的龄期、各项应变与位移（mm）、各条验算的利用率。"""
+    bd = structure(r)["bearing_design"]
+    out = []
+    for x in sorted(bd["rows"], key=lambda x: x["id"]):
+        sp = x["spec"]
+        plain = not x["sliding"]
+        out.append(OrderedDict([
+            ("bearing", x["id"]), ("kind", "连续墩" if x["kind"] == "cont" else "伸缩端"),
+            ("type", "四氟滑板" if x["sliding"] else "普通板式"), ("support", support_name(x["support"])),
+            ("deck", x["deck"]), ("unit", x["unit"]), ("line", x["line"]), ("te_mm", "%.0f" % (sp["te"] * 1000)),
+            ("S", "%.2f" % sp["S"]), ("to_fixed_point_m", "%.3f" % x["r"]), ("age_d", x["t0"]),
+            ("strain_temp_1e6", "%.1f" % (x["eps_t"] * 1e6)), ("strain_shrink_1e6", "%.1f" % (x["eps_s"] * 1e6)),
+            ("strain_creep_1e6", "%.1f" % (x["eps_c"] * 1e6)), ("contract_mm", "%.1f" % (x["d_contract"] * 1000)),
+            ("expand_mm", "%.1f" % (x["d_expand"] * 1000)), ("brake_mm", "%.1f" % (x["d_brake"] * 1000)),
+            ("shear_allow_mm", "%.1f" % ((sp["te_eff"] / 2) * 1000) if plain else ""),
+            ("util_shear", "%.3f" % x["util_shear"] if plain else ""), ("theta_rad", "%.5f" % x["theta"]),
+            ("compression_mm", "%.3f" % (x["dcm"] * 1000)), ("util_rotation", "%.3f" % x["util_rot"]),
+            ("util_compression", "%.3f" % x["util_comp"]), ("plate_need_mm", "%.2f" % (x["ts_need"] * 1000)),
+            ("util_slip", "%.3f" % x["util_slip"] if plain else ""),
+            ("util_friction", "" if plain else "%.3f" % x["util_friction"]),
+            ("slide_travel_m", "" if plain else "%.3f" % x["travel"]),
+            ("util_travel", "" if plain else "%.3f" % x["util_travel"]),
+        ]))
+    return out
+
+
+BEARING_VARIANTS = [
+    ("本桥：温热地区、RH 80%、σpc 取反推值、收缩徐变取终极值", {}),
+    ("寒冷地区（Tmin −10 ℃，Ge 1.2 MPa）", {"climate": "寒冷"}),
+    ("严寒地区（Tmin −23 ℃，Ge 1.5 MPa）", {"climate": "严寒"}),
+    ("RH 40%–70%（按 55%）", {"rh": 0.55}),
+    ("不计徐变（σpc = 0）", {"sigma_pc": 0.0}),
+    ("收缩徐变只算到 10 年", {"t_ultimate": 3650}),
+    ("安装温度放宽到 5–25 ℃", {"t_set": (5.0, 25.0)}),
+]
+
+
+def bearing_sensitivity_rows(r):
+    """支座位移对假设输入的敏感性：每次只改一项，看伸缩端与连续墩的最大缩短量、普通板式支座要多厚。"""
+    s = structure(r)
+    ages = s["bearing_design"]["inputs"]["ages"]
+    out = []
+    for label, p in BEARING_VARIANTS:
+        bd = ST.bearing_design(s, r["els"], dict(p, ages=ages))
+        e = max((x for x in bd["rows"] if x["kind"] == "end"), key=lambda x: x["d_contract"])
+        c = max((x for x in bd["rows"] if x["kind"] == "cont"), key=lambda x: x["util_shear"])
+        need_e = ST.plain_thickness_needed(e["spec"], max(e["d_contract"], e["d_expand"]), 0.0)
+        need_c = ST.plain_thickness_needed(c["spec"], max(c["d_contract"], c["d_expand"]), c["d_brake"])
+        out.append(OrderedDict([
+            ("variant", label), ("end_contract_mm", "%.1f" % (e["d_contract"] * 1000)),
+            ("end_plain_needed_mm", "%d" % round(need_e * 1000) if need_e else "不够"),
+            ("cont_contract_mm", "%.1f" % (c["d_contract"] * 1000)), ("cont_util", "%.2f" % c["util_shear"]),
+            ("cont_needed_mm", "%d" % round(need_c * 1000) if need_c else "不够"),
         ]))
     return out
 
@@ -63,6 +126,9 @@ def line_rows(r):
             ("Pk_kN", "%.2f" % x["Pk"]), ("Cw_end", "%.3f" % min(x["cw"][0], x["cw"][-1])),
             ("Cw_mid", "%.3f" % max(x["cw"][1:-1] or x["cw"])), ("f1_Hz", "%.4f" % x["f1"]),
             ("f_neg_Hz", "%.4f" % x["f_neg"]), ("neg_mode", x["neg_mode"]),
+            ("f1_code_Hz", "%.4f" % ST.code_frequency_estimates(x)["f1"]),
+            ("f2_code_Hz", "%.4f" % ST.code_frequency_estimates(x)["f2"]),
+            ("f_simple_Hz", "%.4f" % ST.code_frequency_estimates(x)["f_simple"]),
             ("mu_pos", "%.4f" % x["mu_pos"]), ("mu_neg", "%.4f" % x["mu_neg"]),
             ("G1_kN", "%.1f" % x["loads"]["G1"]), ("G2_kN", "%.1f" % x["loads"]["G2"]),
             ("continuity_kN", "%.1f" % x["loads"]["CS"]), ("Mud_pos_max_kNm", "%.1f" % max(x["Mud_p"])),
@@ -154,7 +220,57 @@ def structure_summary(r):
         ("bearing_util_end_max", round(max(b["sigma"] for b in bs if b["kind"] == "end") / C.SIGMA_C, 3)),
         ("bearing_util_cont_max", round(max(b["sigma"] for b in bs if b["kind"] == "cont") / C.SIGMA_C, 3)),
         ("bearing_R_ud_min", round(min(b["R_ud_min"] for b in bs), 1)),
-    ])
+    ] + code_frequency_summary(ls) + bearing_summary(s))
+
+
+def code_frequency_summary(ls):
+    """条文说明估算式与有限元频率的对照。"""
+    est = [(ST.code_frequency_estimates(x), x) for x in ls]
+    return [
+        ("f1_code_min", round(min(e["f1"] for e, _ in est), 3)), ("f1_code_max", round(max(e["f1"] for e, _ in est), 3)),
+        ("f2_code_min", round(min(e["f2"] for e, _ in est), 3)), ("f2_code_max", round(max(e["f2"] for e, _ in est), 3)),
+        ("f1_code_over_fe_min", round(min(e["f1"] / x["f1"] for e, x in est), 3)),
+        ("f1_code_over_fe_max", round(max(e["f1"] / x["f1"] for e, x in est), 3)),
+        ("f2_code_over_fe_min", round(min(e["f2"] / x["f_neg"] for e, x in est), 3)),
+        ("f2_code_over_fe_max", round(max(e["f2"] / x["f_neg"] for e, x in est), 3)),
+        ("mu_pos_code_min", round(min(ST.impact(e["f1"]) for e, _ in est), 4)),
+        ("mu_pos_code_max", round(max(ST.impact(e["f1"]) for e, _ in est), 4)),
+        ("mu_neg_code_min", round(min(ST.impact(e["f2"]) for e, _ in est), 4)),
+        ("mu_neg_code_max", round(max(ST.impact(e["f2"]) for e, _ in est), 4)),
+        ("f1_fe_over_simple_max_dev", round(max(abs(x["f1"] / e["f_simple"] - 1) for e, x in est), 4)),
+    ]
+
+
+def bearing_summary(s):
+    """横向分布的 G-M 包络与支座位移验算的要点。"""
+    gm, cs, bd = s["info"]["gm"], s["coef"], s["bearing_design"]
+    rows, units, inp = bd["rows"], bd["units"], bd["inputs"]
+    ends = [x for x in rows if x["kind"] == "end"]
+    conts = [x for x in rows if x["kind"] == "cont"]
+    pre = inp["prestress"]
+    top = max(pre, key=lambda q: q["sigma_pc"])
+    mid = (len(cs) + 1) // 2
+    u0 = next(iter(units.values()))
+    return [
+        ("gm_theta", round(gm["theta"], 4)), ("gm_alpha", round(gm["alpha"], 5)), ("gm_envelope", bool(s["info"]["envelope"])),
+        ("gm_h1", round(gm["h1"], 4)), ("gm_a", round(gm["a"], 3)),
+        ("mc_mid_eccentric", round(cs[mid]["ecc_max"], 4)), ("mc_mid_gm", round(cs[mid]["gm_max"], 4)),
+        ("notional_size_mm", round(inp["h_mm"], 1)), ("sigma_pc_max", round(top["sigma_pc"], 2)),
+        ("sigma_pc_min", round(min(q["sigma_pc"] for q in pre), 2)), ("prestress_Np_max", round(top["Np"], 0)),
+        ("age_end_min", min(x["t0"] for x in ends)), ("age_cont_min", min(x["t0"] for x in conts)),
+        ("brake_lane_kN", round(u0["F_lane"], 1)), ("brake_kN", round(u0["F"], 1)),
+        ("brake_shift_mm", round(max(u["d_brake"] for u in units.values()) * 1000, 1)),
+        ("end_contract_max_mm", round(max(x["d_contract"] for x in ends) * 1000, 1)),
+        ("end_expand_max_mm", round(max(x["d_expand"] for x in ends) * 1000, 1)),
+        ("end_to_fixed_max_m", round(max(x["r"] for x in ends), 2)),
+        ("cont_contract_max_mm", round(max(x["d_contract"] for x in conts) * 1000, 1)),
+        ("cont_shear_util_max", round(max(x["util_shear"] for x in conts), 3)),
+        ("bearing_rotation_util_max", round(max(x["util_rot"] for x in rows), 3)),
+        ("bearing_slip_util_max", round(max(x["util_slip"] for x in conts), 3)),
+        ("slide_friction_util_max", round(max(x["util_friction"] for x in ends), 3) if ends and ends[0]["sliding"] else None),
+        ("slide_travel_max_m", round(max(x["travel"] for x in ends), 3) if ends and ends[0]["sliding"] else None),
+        ("joint_close_util_max", round(max(g["close"] / g["gap"] for g in bd["gaps"]), 3)),
+    ]
 
 
 def girder_rows(r):
@@ -276,6 +392,9 @@ def element_rows(r):
     for row in girder_force_rows(r):
         extra[row["girder"]].update((k, v) for k, v in row.items() if k not in extra[row["girder"]])
     for row in bearing_force_rows(r):
+        tgt = extra[row["bearing"]]
+        tgt.update((k, v) for k, v in row.items() if k not in tgt and v != "")
+    for row in bearing_design_rows(r):
         tgt = extra[row["bearing"]]
         tgt.update((k, v) for k, v in row.items() if k not in tgt and v != "")
     out = OrderedDict()

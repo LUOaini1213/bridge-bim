@@ -61,8 +61,8 @@ sys.path.insert(0, ROOT)
 from bridge import alignment as AL, config as C, schedule as S                    # noqa: E402
 from bridge.model import section_area, support_kind, support_name, support_stations, unit_bounds   # noqa: E402
 from bridge.numcmp import compare                                                  # noqa: E402
-from bridge.pipeline import (CLASS_NAMES, COUNT_ITEMS, bearing_force_rows, compute, girder_force_rows,  # noqa: E402
-                             structure)
+from bridge.pipeline import (CLASS_NAMES, COUNT_ITEMS, bearing_design_rows, bearing_force_rows, compute,  # noqa: E402
+                             girder_force_rows, structure)
 
 MODEL_IFC = os.path.join(ROOT, "model", "bridge_bim.ifc")
 NS = uuid.UUID("0c7d2b8e-8e1f-4f5b-a3c4-1b2e9a6d7f31")   # 固定命名空间，GlobalId 可复现
@@ -672,6 +672,7 @@ def build_structural(f, r, products, bridge, ctx):
             "DesignMomentSaggingMax_kNm": float(row["M_ud_pos"]), "DesignMomentHoggingMin_kNm": float(row["M_ud_neg"]),
             "DesignShearMax_kN": float(row["V_ud_max"]), "LiveDeflection_mm": float(row["deflection_mm"]),
             "LiveDeflectionLimit_mm": float(row["deflection_limit_mm"]), "DeflectionRatio": float(row["deflection_ratio"])})
+    design = {row["bearing"]: row for row in bearing_design_rows(r)}
     for row in bearing_force_rows(r):
         if row["kind"] == "临时支座":
             props = {"ReactionFirstStage_kN": float(row["R_G1"])}
@@ -682,6 +683,18 @@ def build_structural(f, r, products, bridge, ctx):
                      "EffectiveArea_m2": float(row["Ae_m2"]), "MeanPressure_MPa": float(row["sigma_MPa"]),
                      "PressureLimit_MPa": float(C.SIGMA_C), "Utilisation": float(row["utilisation"]),
                      "RequiredSize_m": float(row["size_required_m"])}
+            d = design[row["bearing"]]
+            props.update({"BearingType": d["type"], "RubberThickness_mm": float(d["te_mm"]),
+                          "DistanceToFixedPoint_m": float(d["to_fixed_point_m"]), "AgeWhenLoaded_d": int(d["age_d"]),
+                          "Contraction_mm": float(d["contract_mm"]), "Expansion_mm": float(d["expand_mm"]),
+                          "BrakingShift_mm": float(d["brake_mm"]), "Rotation_rad": float(d["theta_rad"]),
+                          "RotationUtilisation": float(d["util_rotation"]),
+                          "CompressionUtilisation": float(d["util_compression"])})
+            for key, name in (("shear_allow_mm", "ShearAllowance_mm"), ("util_shear", "ShearUtilisation"),
+                              ("util_slip", "SlipUtilisation"), ("util_friction", "SlideFrictionUtilisation"),
+                              ("slide_travel_m", "SlideTravel_m"), ("util_travel", "SlideTravelUtilisation")):
+                if d[key] != "":
+                    props[name] = float(d[key])
         ps = api.pset.add_pset(f, product=products[row["bearing"]], name="BridgeBIM_Structural")
         api.pset.edit_pset(f, pset=ps, properties=props)
     return out

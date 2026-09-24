@@ -26,7 +26,7 @@ import rhino3dm                # noqa: E402
 
 from bridge import alignment as AL, config as C, model as M   # noqa: E402
 
-EXPECTED = 188
+EXPECTED = 216
 README = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
 
 
@@ -55,6 +55,8 @@ LATERAL = {int(r["pos"]): r for r in rows("lateral_distribution.csv")}
 LINES = rows("girder_lines.csv")
 SECTIONS = rows("sections.csv")
 REACTIONS = rows("bearing_reactions.csv")
+DESIGN = rows("bearing_design.csv")
+BSENS = rows("bearing_sensitivity.csv")
 
 failures, checked = [], [0]
 
@@ -128,6 +130,72 @@ def ifc_structure():
     return out
 
 
+def bearing_movement_claims():
+    """「支座位移与剪切变形」一节：输入、两个最不利支座、换滑板支座的理由、敏感性表。"""
+    t_max, t_min = C.T_EFFECTIVE[C.CLIMATE]
+    claim("位移：温度", r"\*\*温度\*\*：(\S\S)地区【假设[\s\S]*?混凝土桥有效温度 (\d+) / (-\d+) ℃\s*\n  （JTG D60-2015 表 4\.3\.12-2），"
+          r"支座开始受力时的结构温度 (\d+)–(\d+) ℃【假设】，线膨胀系数 (\S+)。",
+          [C.CLIMATE, "%d" % t_max, "%d" % t_min, "%d" % C.T_SET[0], "%d" % C.T_SET[1], "%.1e" % C.ALPHA_C])
+    claim("位移：收缩徐变", r"RH (\d+)%【假设】，理论厚度 h = 2A/u = ([\d.]+) mm，从 (\d+) d\s*\n  开始收缩，取终极值。[\s\S]*?"
+          r"最年轻 (\d+) d；连续墩是浇墩顶连续段那天，\s*\n  (\d+) d——",
+          ["%d" % round(C.RH * 100), "%.1f" % SUMMARY["notional_size_mm"], C.T_SHRINK_START, SUMMARY["age_end_min"],
+           SUMMARY["age_cont_min"]])
+    if C.T_ULTIMATE is not None:
+        failures.append("位移：README 说收缩徐变取终极值，config.T_ULTIMATE = %r" % C.T_ULTIMATE)
+    claim("位移：σpc", r"钢束重心距梁底 ([\d.]+) m【假设】）反推每片梁要的有效预加力，\s*\n  最大 (\d+) kN、σpc = ([\d.]+) MPa"
+          r"（各片 ([\d.]+)–([\d.]+) MPa）",
+          ["%.2f" % C.TENDON_COVER, "%d" % SUMMARY["prestress_Np_max"], "%.2f" % SUMMARY["sigma_pc_max"],
+           "%.2f" % SUMMARY["sigma_pc_min"], "%.2f" % SUMMARY["sigma_pc_max"]])
+    unit_len = max(float(r["length_m"]) for r in LINES)
+    claim("位移：制动力", r"一联 (\d+) m 上 10% × \(qk·L \+ Pk\) 不到 (\d+) kN，取 (\d+) kN；三车道同向 × ([\d.]+) = ([\d.]+) kN，"
+          r"全部由连续墩的\s*\n  普通板式支座按刚度分担，整联平移 ([\d.]+) mm",
+          ["%d" % (round(unit_len / 10.0) * 10), "%d" % C.BRAKE_MIN_LANE, "%d" % C.BRAKE_MIN_LANE,
+           "%.2f" % C.BRAKE_LANE_FACTOR[3], "%.1f" % SUMMARY["brake_kN"], "%.1f" % SUMMARY["brake_shift_mm"]])
+    pk_max = max(float(r["Pk_kN"]) for r in LINES)
+    if not 0.1 * (C.Q_K * unit_len + pk_max) < C.BRAKE_MIN_LANE or abs(C.BRAKE_LANE_FACTOR[3] * C.BRAKE_MIN_LANE - SUMMARY["brake_kN"]) > 0.05:
+        failures.append("位移：README 说每车道制动力取下限 165 kN、三车道 ×2.34，产物里不是这样")
+    ends = [r for r in DESIGN if r["kind"] == "伸缩端"]
+    conts = [r for r in DESIGN if r["kind"] == "连续墩"]
+    we = max(ends, key=lambda r: float(r["contract_mm"]))
+    wc = max(conts, key=lambda r: float(r["util_shear"]))
+    claim("位移：设计表行数", r"最不利的两个支座（全表 (\d+) 行见", [len(DESIGN)])
+    for r in (we, wc):
+        claim("位移：%s" % r["bearing"], r"\| %s \| ([^|]+?) \| ([\d.]+) \| (\d+) \| ([\d.]+) / ([\d.]+) / ([\d.]+) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \|"
+              % r["bearing"], [BEARINGS[r["bearing"]]["size"], r["to_fixed_point_m"], r["age_d"], r["strain_temp_1e6"],
+                               r["strain_shrink_1e6"], r["strain_creep_1e6"], r["contract_mm"], r["expand_mm"], r["brake_mm"]])
+    ser = C.BEARING_SERIES[("circle", C.BEARING_D)]
+    t_top = max(ser["te"])
+    allow = (ser["te"][t_top] - 2 * C.BEARING_COVER_TB) / 2
+    claim("位移：伸缩端换滑板", r"伸缩端要缩短 ([\d.]+) mm：GYZ d(\d+) 最厚一档（总厚 (\d+) mm、橡胶层 (\d+) mm）容许 \(te − 5\)/2 = ([\d.]+) mm，"
+          r"不够。所以伸缩端用\s*\n四氟滑板支座 GYZF4：橡胶部分同 GYZ d(\d+)×(\d+)，面贴 (\d+) mm 聚四氟乙烯板",
+          [we["contract_mm"], "%d" % round(C.BEARING_D * 1000), "%d" % round(t_top * 1000), "%d" % round(ser["te"][t_top] * 1000),
+           "%.1f" % (allow * 1000), "%d" % round(C.BEARING_D * 1000), "%d" % round((C.BEARING_T - C.PTFE_T) * 1000),
+           "%d" % round(C.PTFE_T * 1000)])
+    if not float(we["contract_mm"]) > allow * 1000 or not C.END_BEARING_SLIDING:
+        failures.append("位移：README 说普通板式支座最厚一档也不够、伸缩端用滑板支座，产物里不是这样")
+    cser = C.BEARING_SERIES[("rect", C.BEARING_CONT_A, C.BEARING_CONT_B)]
+    claim("位移：连续墩", r"连续墩离不动点最远 ([\d.]+) m，(GJZ \d+×\d+×\d+)（橡胶层 (\d+) mm）\s*\n容许 ([\d.]+) mm，"
+          r"剪切变形利用率 ([\d.]+)。容许值照厂家表的算法扣掉上下各 ([\d.]+) mm 保护层",
+          ["%.1f" % max(float(r["to_fixed_point_m"]) for r in conts), BEARINGS[wc["bearing"]]["size"],
+           "%d" % round(cser["te"][C.BEARING_CONT_T] * 1000), wc["shear_allow_mm"], wc["util_shear"],
+           "%g" % (C.BEARING_COVER_TB * 1000)])
+    for r in BSENS:
+        claim("位移敏感性：%s" % r["variant"], r"\| %s \| ([\d.]+) \| (\S+) \| ([\d.]+) \| ([\d.]+) \| (\S+) \|" % re.escape(r["variant"]),
+              [r["end_contract_mm"], r["end_plain_needed_mm"], r["cont_contract_mm"], r["cont_util"], r["cont_needed_mm"]])
+    plain_ok = [r["variant"] for r in BSENS if r["end_plain_needed_mm"] != "不够"]
+    thicker = [r["variant"] for r in BSENS if r["cont_needed_mm"] != "%d" % round(C.BEARING_CONT_T * 1000)
+               and r["cont_needed_mm"].isdigit() and int(r["cont_needed_mm"]) > C.BEARING_CONT_T * 1000]
+    claim("位移敏感性：结论", r"伸缩端用滑板支座这个结论，只在(不计徐变)时才不成立；连续墩的 (\d+) mm 一档，在(严寒)地区或 RH (\d+)% 的"
+          r"干燥地区要换 (\d+) mm",
+          ["不计徐变" if plain_ok == ["不计徐变（σpc = 0）"] else plain_ok, "%d" % round(C.BEARING_CONT_T * 1000),
+           "严寒" if len(thicker) == 2 and thicker[0].startswith("严寒") else thicker,
+           "55" if len(thicker) == 2 and "55%" in thicker[1] else thicker,
+           next((r["cont_needed_mm"] for r in BSENS if r["variant"] in thicker), "?")])
+    g = max(abs(C.V_PVI[1][1] - C.V_PVI[0][1]) / (C.V_PVI[1][0] - C.V_PVI[0][0]),
+            abs(C.V_PVI[2][1] - C.V_PVI[1][1]) / (C.V_PVI[2][0] - C.V_PVI[1][0]))
+    claim("位移：支座水平安放", r"纵坡最大 ([\d.]+)%，超过第 8\.7\.3 条允许直接放在梁底斜面下的 1%", ["%.1f" % (g * 100)])
+
+
 def main():
     cls = Counter(r["class"] for r in ELEMENTS)
     kinds = Counter(M.support_kind(k) for k in range(C.N_SPANS + 1))
@@ -166,13 +234,19 @@ def main():
     claim("总览：检查", r"模型 (\d+) 条 \+ 梁场与架梁 (\d+) 条 \+ 上部结构 (\d+) 条，\*\*(\d+)/(\d+)\*\* 通过",
           [groups["模型"], groups["梁场与架梁"], groups["上部结构"], passed, len(CHECKS)])
     claim("总览：结构计算", r"(\d+) 条梁位线里基本组合正弯矩最大 \*\*([\d.]+)\*\* kN·m、墩顶负弯矩最大 \*\*(-[\d.]+)\*\* kN·m，"
-          r"活载长期挠度最大为限值的 \*\*([\d.]+)\*\*；\s*\n  支座按压应力选型（伸缩端 (φ\d+)、连续墩 (\d+×\d+)），"
+          r"活载长期挠度最大为限值的 \*\*([\d.]+)\*\*；\s*\n  支座按压应力选平面（伸缩端 (φ\d+)、连续墩 (\d+×\d+)），"
           r"利用率最大 \*\*([\d.]+)\*\*；自写求解器与 OpenSees 互核到 (1e-\d+)",
           [SUMMARY["structure_lines"], "%.1f" % SUMMARY["Mud_pos_max"], "%.1f" % SUMMARY["Mud_neg_min"],
            "%.3f" % SUMMARY["deflection_ratio_max"], "φ%d" % round(C.BEARING_D * 1000),
            "%d×%d" % (round(C.BEARING_CONT_A * 1000), round(C.BEARING_CONT_B * 1000)),
            "%.3f" % max(SUMMARY["bearing_util_end_max"], SUMMARY["bearing_util_cont_max"]),
            test_const(T_STRUCT, r"self\.assertLess\(rel\(a, b\), (1e-\d+)\)")])
+    theta_narrow = test_const(S_STRUCT, r"THETA_NARROW = ([\d.]+)")
+    claim("总览：支座位移", r"伸缩端离一联的不动点最远 \*\*([\d.]+)\*\* m，温度、收缩、徐变要缩短 \*\*([\d.]+)\*\* mm，"
+          r"普通板式支座最厚一档也不够，\s*\n  改用四氟滑板支座；连续墩的普通板式支座剪切变形利用率 \*\*([\d.]+)\*\*。"
+          r"横向分布按教材更严的窄桥判别 θ' = \*\*([\d.]+)\*\* > ([\d.]+)，",
+          ["%.2f" % SUMMARY["end_to_fixed_max_m"], "%.1f" % SUMMARY["end_contract_max_mm"],
+           "%.3f" % SUMMARY["cont_shear_util_max"], "%.3f" % SUMMARY["gm_theta"], theta_narrow])
     claim("总览：4D", r"梁场 \*\*(\d+)\*\* 个台座提前 \*\*(\d+)\*\* 天开工，架桥机 \*\*(\d+)\*\* 天架完 (\d+) 片、\*\*(\d+)\*\* 天等梁；存梁峰值 \*\*(\d+)\*\* 片（容量 \*\*(\d+)\*\*）；\*\*([\d-]+)\*\* 完成全部体系转换",
           [SUMMARY["beds"], SUMMARY["lead_days"], SUMMARY["erect_days"], SUMMARY["girders"], SUMMARY["wait_days"],
            SUMMARY["storage_peak"], SUMMARY["storage_capacity"], SUMMARY["conversion_last"]])
@@ -200,11 +274,11 @@ def main():
     claim("分联", r"12 跨分 (\d) 联（([^）]+)）", [len(C.UNITS), " + ".join("%d×%.0f" % (u, C.SPAN) for u in C.UNITS)])
     claim("支承线分类", r"(\d+) 条支承线分三种：(\d+) 个桥台、(\d+) 个过渡墩（两联交界，设伸缩缝）、\s*\n(\d+) 个连续墩",
           [len(st), kinds["A"], kinds["T"], kinds["C"]])
-    claim("伸缩端", r"梁端面距支承线 ([\d.]+) m，联与联之间留 ([\d.]+) m 伸缩缝；梁直接落在 (φ\d+×\d+) 永久支座上，共 (\d+) 个",
-          ["%.2f" % C.EXP_HALF, "%.2f" % (2 * C.EXP_HALF), "φ%d×%d" % (C.BEARING_D * 1000, round(C.BEARING_T * 1000)),
-           sizes["φ%d×%d" % (C.BEARING_D * 1000, round(C.BEARING_T * 1000))]])
-    cont_size = "%d×%d×%d" % (round(C.BEARING_CONT_A * 1000), round(C.BEARING_CONT_B * 1000), round(C.BEARING_CONT_T * 1000))
-    claim("连续端", r"各落在一个临时支座上，共 (\d+) 个；墩中心一排 (\d+×\d+×\d+) 矩形永久支座（(\d+) 个，\s*\n  顺桥向 (\d+) mm）",
+    end_size = "%s φ%d×%d" % ("GYZF4" if C.END_BEARING_SLIDING else "GYZ", round(C.BEARING_D * 1000), round(C.BEARING_T * 1000))
+    claim("伸缩端", r"梁端面距支承线 ([\d.]+) m，联与联之间留 ([\d.]+) m 伸缩缝；梁直接落在四氟滑板支座 (GYZF4 φ\d+×\d+) 上，共 (\d+) 个",
+          ["%.2f" % C.EXP_HALF, "%.2f" % (2 * C.EXP_HALF), end_size, sizes[end_size]])
+    cont_size = "GJZ %d×%d×%d" % (round(C.BEARING_CONT_A * 1000), round(C.BEARING_CONT_B * 1000), round(C.BEARING_CONT_T * 1000))
+    claim("连续端", r"各落在一个临时支座上，共 (\d+) 个；墩中心一排 (GJZ \d+×\d+×\d+) 矩形板式支座（(\d+) 个，\s*\n  顺桥向 (\d+) mm）",
           [cls["temp_support"], cont_size, sizes[cont_size], "%d" % round(C.BEARING_CONT_A * 1000)])
     claim("横隔板", r"每跨相邻两片梁之间 (\d+) 道横隔板（两道端横隔板 \+ ([^）]+) 跨）",
           [2 + len(C.DIAPHRAGM_FRACTIONS), "、".join({0.25: "1/4", 0.5: "1/2", 0.75: "3/4"}[f] for f in C.DIAPHRAGM_FRACTIONS)])
@@ -241,7 +315,7 @@ def main():
     claim("垫石表行数", r"全表 (\d+) 行见\s*\n\[`data/bearings\.csv`\][\s\S]*?临时支座 (\d+) 行", [len(BEARINGS), cls["temp_support"]])
     for bid in ("B-L01-1a", "B-L01-2a", "B-P01-L1"):
         r = BEARINGS[bid]
-        claim("垫石表 %s" % bid, r"\| %s \| (\S+) \| (\S+) \| (\S+) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \|" % bid,
+        claim("垫石表 %s" % bid, r"\| %s \| (\S+) \| ([^|]+?) \| (\S+) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \|" % bid,
               [r["kind"], r["size"], r["support"], r["x"], r["y"], r["bearing_top"], r["seat_top"], r["cap_top"], r["seat_height"]])
     # ---- 工程量
     for k, r in TAKEOFF.items():
@@ -265,12 +339,37 @@ def main():
     claim("结构：负弯矩冲击系数", r"四跨一联取第(\S)阶，约 ([\d.]+) f1），μ = ([\d.]+)–([\d.]+)——",
           ["四" if modes == {"4"} else "?", "%.1f" % ratios[len(ratios) // 2],
            "%.4f" % SUMMARY["mu_neg_min"], "%.4f" % SUMMARY["mu_neg_max"]])
+    claim("结构：条文说明估算式", r"f1 = ([\d.]+)–([\d.]+) Hz、f2 = ([\d.]+)–([\d.]+) Hz，比有限元的\s*\n基频高 (\d+)%–(\d+)%、"
+          r"比第四阶高 (\d+)%–(\d+)%，冲击系数会是 μ = ([\d.]+)–([\d.]+) 与 ([\d.]+)–([\d.]+)。[\s\S]*?最多差 ([\d.]+)%",
+          ["%.3f" % SUMMARY["f1_code_min"], "%.3f" % SUMMARY["f1_code_max"], "%.3f" % SUMMARY["f2_code_min"],
+           "%.3f" % SUMMARY["f2_code_max"]]
+          + ["%d" % round(100 * (SUMMARY[k] - 1)) for k in ("f1_code_over_fe_min", "f1_code_over_fe_max",
+                                                            "f2_code_over_fe_min", "f2_code_over_fe_max")]
+          + ["%.4f" % SUMMARY[k] for k in ("mu_pos_code_min", "mu_pos_code_max", "mu_neg_code_min", "mu_neg_code_max")]
+          + ["%.2f" % (100 * SUMMARY["f1_fe_over_simple_max_dev"])])
     claim("结构：频率与冲击", r"f1 = ([\d.]+)–([\d.]+) Hz，μ = ([\d.]+)–([\d.]+)；",
           ["%.3f" % SUMMARY["f1_min"], "%.3f" % SUMMARY["f1_max"], "%.4f" % SUMMARY["mu_pos_min"], "%.4f" % SUMMARY["mu_pos_max"]])
     for label, pos in (("1 / 5 号（边梁）", 1), ("2 / 4 号", 2), ("3 号", 3)):
         r = LATERAL[pos]
-        claim("横向分布 %d" % pos, r"\| %s \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \|" % re.escape(label),
-              [r["I_composite_m4"], r["mc_max"], r["mc_no_torsion"], r["m0_max"]])
+        claim("横向分布 %d" % pos, r"\| %s \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \|" % re.escape(label),
+              [r["I_composite_m4"], r["mc_eccentric"], r["mc_gm"], r["mc_max"], r["mc_no_torsion"], r["m0_max"]])
+    claim("窄桥判别：横隔板", r"中横隔板厚\s*\n([\d.]+) m、底面在梁顶以下 ([\d.]+) m、间距 ([\d.]+) m，桥面板平均厚 ([\d.]+) m，"
+          r"翼板有效宽度按表 2-4-5。本桥 θ' = \*\*([\d.]+)\*\*，不算窄桥",
+          ["%.2f" % C.DIAPHRAGM_T, "%.2f" % -C.DIAPHRAGM_BOTTOM, "%.1f" % SUMMARY["gm_a"], "%.3f" % SUMMARY["gm_h1"],
+           "%.3f" % SUMMARY["gm_theta"]])
+    if not SUMMARY["gm_theta"] > float(theta_narrow) or not SUMMARY["gm_envelope"]:
+        failures.append("窄桥判别：README 说 θ' > %s、两法取大值，产物里不是这样" % theta_narrow)
+    claim("窄桥判别：G-M 的验证", r"Hetényi 闭式解差 < (1e-\d+)）[\s\S]*?与逐毫米扫描差 < (1e-\d+)）。拿它算教材例 2-4-6，"
+          r"三片梁的 mc 与教材差都在 ([\d.]+)% 以内",
+          [test_const(T_STRUCT, r"2 \* k \* w, (1e-\d+)\)"), test_const(T_STRUCT, r'coef\[k\]\["gm_max"\] \+ (1e-\d+)\)'),
+           "%g" % (100 * float(test_const(T_STRUCT, r"delta=0\.505 \* ([\d.]+)\)")))])
+    l1, l2, l3 = LATERAL[1], LATERAL[2], LATERAL[3]
+    claim("窄桥判别：结果", r"比 G-M 大 ([\d.]+)%、([\d.]+)%），中梁由 G-M 控制（([\d.]+) → ([\d.]+)，\+([\d.]+)%）",
+          ["%.1f" % (100 * (float(l1["mc_eccentric"]) / float(l1["mc_gm"]) - 1)),
+           "%.1f" % (100 * (float(l2["mc_eccentric"]) / float(l2["mc_gm"]) - 1)), l3["mc_eccentric"], l3["mc_gm"],
+           "%.1f" % (100 * (float(l3["mc_gm"]) / float(l3["mc_eccentric"]) - 1))])
+    if (l1["mc_from"], l2["mc_from"], l3["mc_from"]) != ("偏心压力", "偏心压力", "G-M"):
+        failures.append("窄桥判别：README 说边梁、次边梁由修正偏心压力法控制、中梁由 G-M 控制，产物里不是这样")
     claim("结构：γ0", r"基本组合 γ0\(γG·G \+ 1\.4\(1 \+ μ\)Q\)，γ0 = ([\d.]+)", ["%.1f" % C.GAMMA_0])
     claim("结构：截面表行数", r"全表 (\d+) 行见 \[`data/sections\.csv`\]", [len(SECTIONS)])
     l111 = [r for r in SECTIONS if (r["deck"], r["unit"], r["line"]) == ("L", "1", "1")]
@@ -286,7 +385,7 @@ def main():
     next_d = int(math.ceil(circle * 1000 / step_d)) * step_d
     clear_need = test_const(src("bridge/checks.py"), r"def check_perm_bearing_under_joint\(els, need=([\d.]+)\)")
     perm_detail = detail["连续墩永久支座全在现浇连续段下（距预制梁端 ≥ %s m）" % clear_need]
-    claim("支座选型", r"伸缩端 Rck 最大 ([\d.]+) kN、\s*\n需要直径 ([\d.]+) m，取 (φ\d+)；连续墩 Rck 最大 ([\d.]+) kN，圆形要 φ(\d+)，"
+    claim("支座选型", r"支座平面：Rck（结构重力与汽车荷载标准值的组合，计冲击）/ Ae（加劲钢板面积）≤ σc。伸缩端 Rck 最大 ([\d.]+) kN、\s*\n需要直径 ([\d.]+) m，取 (φ\d+)；连续墩 Rck 最大 ([\d.]+) kN，圆形要 φ(\d+)，"
           r"按 (\d+) mm 进级是 φ(\d+)——可连续端梁端离墩中心线\s*\n最近只有 ([\d.]+) m，φ\d+ 的边缘离梁端只剩 ([\d.]+) m，"
           r"正好卡在检查下限上。所以用矩形 (\d+) × (\d+)（顺桥向 × 横桥向），\s*\n顺桥向离梁端 ([\d.]+) m。σc = (\d+) MPa：JTG 3362-2018",
           ["%.1f" % max(float(r["Rck"]) for r in ends), "%.3f" % max(float(r["size_required_m"]) for r in ends),
@@ -302,19 +401,24 @@ def main():
            test_const(T_STRUCT, r'"STIFF_FACTOR", ([\d.]+)\)'),
            "%d" % round(1000 * float(test_const(T_STRUCT, r'params\["w"\] = ([\d.]+)'))),
            test_const(T_STRUCT, r'"UNIT_RC", ([\d.]+)\)')])
+    claim("结构反例：支座与窄桥", r"关掉 G-M 包络；伸缩端换回普通板式支座、\s*\n连续墩支座换成 (\d+) mm 一档、伸缩端橡胶换成最薄的 (\d+) mm 一档；"
+          r"摩擦系数改成 ([\d.]+)、四氟板不加硅脂（([\d.]+)）；在 BIM 里把\s*\n一道伸缩缝改成 (\d+) mm、支座离梁端只剩 ([\d.]+) m",
+          ["%d" % round(1000 * float(test_const(T_STRUCT, r'"BEARING_CONT_T", ([\d.]+)\)'))),
+           "%d" % round(1000 * float(test_const(T_STRUCT, r'"BEARING_T", ([\d.]+) \+ C\.PTFE_T\)'))),
+           test_const(T_STRUCT, r'"MU_RUBBER_CONCRETE", ([\d.]+)\)'), test_const(T_STRUCT, r'"MU_PTFE", ([\d.]+)\)'),
+           "%d" % round(1000 * float(test_const(T_STRUCT, r'attrs\["gap"\] = ([\d.]+)'))),
+           test_const(T_STRUCT, r'"BEARING_INSET", ([\d.]+)\)')])
     claim("OpenSees 互核", r"前(\S)阶频率逐项差 < (1e-\d+)（相对）",
           [{"2": "两", "4": "四"}.get(test_const(T_STRUCT, r'ops\.eigen\("-fullGenLapack", (\d+)\)'), "?"),
            test_const(T_STRUCT, r"\), (1e-\d+) \* scale_m\)")])
     ae_end = math.pi * (C.BEARING_D - 2 * C.BEARING_COVER) ** 2 / 4
     ae_cont = (C.BEARING_CONT_A - 2 * C.BEARING_COVER) * (C.BEARING_CONT_B - 2 * C.BEARING_COVER)
     claim("支座规格表", r"GYZ d(\d+)、GJZ (\d+)×(\d+) 的最大承压力 (\d+) kN、(\d+) kN，正好是 (\d+) MPa × 加劲钢板面积\s*\n"
-          r"（每边扣 (\d+) mm 保护层）。橡胶层厚度取同一系列里的一档（(φ\d+×\d+)、(\d+×\d+×\d+)）",
+          r"（每边扣 (\d+) mm 保护层）。型号沿用这张表的 JT/T 4-2004 写法",
           ["%d" % round(C.BEARING_D * 1000), "%d" % round(C.BEARING_CONT_A * 1000), "%d" % round(C.BEARING_CONT_B * 1000),
            "%d" % round(ae_end * C.SIGMA_C * 1000), "%d" % round(ae_cont * C.SIGMA_C * 1000), "%d" % C.SIGMA_C,
-           "%d" % round(C.BEARING_COVER * 1000), "φ%d×%d" % (round(C.BEARING_D * 1000), round(C.BEARING_T * 1000)),
-           "%d×%d×%d" % (round(C.BEARING_CONT_A * 1000), round(C.BEARING_CONT_B * 1000), round(C.BEARING_CONT_T * 1000))])
-    half = max(float(r["length_m"]) for r in LINES) / 2
-    claim("范围：支座位移", r"伸缩端离一联的不动点约 (\d+) m", ["%d" % (round(half / 10.0) * 10)])
+           "%d" % round(C.BEARING_COVER * 1000)])
+    bearing_movement_claims()
     claim("变异演练", r"对求解器做 (\d+) 种变异", [mutants()])
     n_temp = sum(1 for r in REACTIONS if r["kind"] == "临时支座")
     claim("结果回写", r"(\d+) 片预制梁和 (\d+) 个支座（永久 (\d+) \+ 临时 (\d+)）",
@@ -381,7 +485,7 @@ def main():
     # ---- 复现与结构
     claim("测试总数", r"跑全部 (\d+) 个测试", [n_tests()])
     claim("仓库：检查条数", r"\| `bridge/checks\.py` \| (\d+) 条模型检查 \|", [groups["模型"]])
-    claim("仓库：结构检查", r"频率与冲击系数、组合、挠度与支座验算；(\d+) 条结构检查", [groups["上部结构"]])
+    claim("仓库：结构检查", r"频率与冲击系数、组合、挠度、支座位移与验算；(\d+) 条结构检查", [groups["上部结构"]])
     claim("仓库：梁场检查", r"梁场布置与 (\d+) 条检查", [groups["梁场与架梁"]])
     claim("仓库：表数", r"\| `data/` \| (\d+) 个表", [len([p for p in os.listdir(os.path.join(ROOT, "data"))
                                                         if p.endswith((".csv", ".json"))])])

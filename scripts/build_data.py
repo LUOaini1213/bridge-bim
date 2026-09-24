@@ -65,6 +65,8 @@ def outputs():
         "sections.csv": csv_text(P.section_rows(r)),
         "girder_forces.csv": csv_text(P.girder_force_rows(r)),
         "bearing_reactions.csv": csv_text(P.bearing_force_rows(r)),
+        "bearing_design.csv": csv_text(P.bearing_design_rows(r)),
+        "bearing_sensitivity.csv": csv_text(P.bearing_sensitivity_rows(r)),
         "checks.json": json.dumps(checks, ensure_ascii=False, indent=1) + "\n",
         "summary.json": json.dumps(sm, ensure_ascii=False, indent=1) + "\n",
     }

@@ -73,7 +73,7 @@ CHECKS = {
 
 def drills():
     def bearings(d):
-        edit(os.path.join(d, "data", "bearings.csv"), "131.2967,0.1507", "131.2967,0.1607")
+        edit(os.path.join(d, "data", "bearings.csv"), "131.2937,0.1507", "131.2937,0.1607")
 
     def girders(d):
         edit(os.path.join(d, "data", "girders.csv"), "G-L06-3,L,6,3,2,中跨,C,C,7.000,28.78",
@@ -121,6 +121,15 @@ def drills():
     def m3_moment(d):
         edit_3dm(os.path.join(d, "model", "bridge_bim.3dm"), "G-L01-1", "M_ud_pos", "9701.4")
 
+    def movement(d):
+        edit(os.path.join(d, "data", "bearing_design.csv"), ",291.3,48.8,14.5,", ",291.3,48.9,14.5,")
+
+    def m3_shear(d):
+        edit_3dm(os.path.join(d, "model", "bridge_bim.3dm"), "B-P09-R1", "util_shear", "0.722")
+
+    def climate(d):
+        edit(os.path.join(d, "bridge", "config.py"), 'CLIMATE = "温热" ', 'CLIMATE = "寒冷" ')
+
     def readme_structure(d):
         edit(os.path.join(d, "README.md"), "| 1 / 5 号（边梁） | 0.46662 | 0.8693 |", "| 1 / 5 号（边梁） | 0.46662 | 0.8694 |")
 
@@ -138,6 +147,9 @@ def drills():
         ("改规范系数（γ0 1.1 → 1.0）却不重算", gamma0, ["data", "ifc"]),
         (".3dm 里一片梁的弯矩设计值属性", m3_moment, ["rhino"]),
         ("README 改一个横向分布系数", readme_structure, ["readme"]),
+        ("支座位移表改一个缩短量 0.1 mm", movement, ["data", "ifc_struct", "readme"]),
+        (".3dm 里一个支座的剪切变形利用率属性", m3_shear, ["rhino"]),
+        ("改气候分区（温热 → 寒冷）却不重算", climate, ["data", "ifc", "readme"]),
     ]
 
 

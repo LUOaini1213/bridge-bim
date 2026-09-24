@@ -14,12 +14,14 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
+import math                           # noqa: E402
 from bridge import structure as ST   # noqa: E402
 import test_structure as T            # noqa: E402
 
 _k, _m, _fe, _lane, _w, _lever, _inf = (ST.Beam._k, ST.Beam._m, ST.Beam._fixed_end, ST.lane_effects, ST._weights,
                                         ST.lever_eta, ST.Beam.influence)
 _neg = ST.negative_moment_mode
+_smooth, _creep0, _pre, _spec = ST.smooth_extremes, ST.nominal_creep, ST.prestress_estimate, ST.bearing_spec
 
 
 def k_bad(self, e):
@@ -61,6 +63,30 @@ def influence_bad(self):
     return IM, [[-v for v in row] for row in IV], IR, IW
 
 
+def smooth_bad(fn, rel, lo, hi):
+    """只粗扫、不细化。"""
+    m = max(1, int(math.ceil((hi - lo) / ST.GM_SCAN - 1e-9)))
+    vals = [sum(fn(lo + (hi - lo) * j / m + r) for r in rel) for j in range(m + 1)]
+    return max(vals), min(vals)
+
+
+def creep_bad(t0, h_mm, rh):
+    return _creep0(t0, h_mm, rh) * (0.1 + t0 ** 0.2) / (0.1 + t0 ** 0.3)
+
+
+def shrink_dev_bad(dt, h_mm):
+    return math.sqrt(dt / (35.0 * (h_mm / 100.0) ** 2 + dt)) if dt > 0 else 0.0
+
+
+def prestress_bad(res):
+    return [dict(q, Np=q["Np"] * 0.85, sigma_pc=q["sigma_pc"] * 0.85) for q in _pre(res)]
+
+
+def spec_bad(e):
+    sp = _spec(e)
+    return dict(sp, te_eff=sp["te"])
+
+
 MUTANTS = [
     ("单元刚度矩阵一个元素 ×1.001", ST.Beam, "_k", k_bad),
     ("一致质量矩阵 156 写成 150", ST.Beam, "_m", m_bad),
@@ -70,8 +96,14 @@ MUTANTS = [
     ("杠杆原理法把负值截成 0", ST, "lever_eta", lever_bad),
     ("剪力影响线反号", ST.Beam, "influence", influence_bad),
     ("负弯矩冲击系数取第二阶频率", ST, "negative_moment_mode", neg_mode_bad),
+    ("G-M 找最不利车位只粗扫、不细化", ST, "smooth_extremes", smooth_bad),
+    ("徐变 β(t0) 的指数 0.2 写成 0.3", ST, "nominal_creep", creep_bad),
+    ("收缩发展系数的 350 写成 35", ST, "shrinkage_development", shrink_dev_bad),
+    ("有效预加力漏了抗裂式里的 0.85", ST, "prestress_estimate", prestress_bad),
+    ("橡胶层厚没扣上下保护层", ST, "bearing_spec", spec_bad),
 ]
-CLASSES = [T.Sections, T.Distribution, T.BeamClosedForm, T.CodeFunctions, T.Bridge, T.OpenSeesCrossCheck]
+CLASSES = [T.Sections, T.Distribution, T.GMMethod, T.BeamClosedForm, T.CodeFunctions, T.Bridge, T.AppendixC,
+           T.BearingMovements, T.OpenSeesCrossCheck]
 
 
 def main():
@@ -88,7 +120,7 @@ def main():
         print("%-30s %s" % (name, "被 %d 个测试抓到：%s" % (len(bad), "；".join(bad[:3])) if bad else "逃过了"))
         if not bad:
             survived.append(name)
-    if ST.Beam._k is not _k or ST.lane_effects is not _lane:
+    if ST.Beam._k is not _k or ST.lane_effects is not _lane or ST.bearing_spec is not _spec:
         sys.exit("变异没有还原")
     if survived:
         print("FAIL %d / %d 个变异没被抓到：%s" % (len(survived), len(MUTANTS), "、".join(survived)))
