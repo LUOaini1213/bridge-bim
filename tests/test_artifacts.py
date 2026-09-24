@@ -137,6 +137,124 @@ class Rhino3dm(unittest.TestCase):
             self.assertTrue(os.path.getsize(os.path.join(ROOT, "docs", "img", name + ".png")) > 50000, name)
 
 
+def read_png(data):
+    """8 位、不交错的 RGB / RGBA PNG（bytes）→ (宽, 高, 每像素字节数, 逐行 bytes)。只用标准库。"""
+    import struct
+    import zlib
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("不是 PNG")
+    pos, idat = 8, []
+    while pos < len(data):
+        n, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        chunk = data[pos + 8:pos + 8 + n]
+        if kind == b"IHDR":
+            w, h, depth, ctype, _, _, interlace = struct.unpack(">IIBBBBB", chunk)
+            if depth != 8 or ctype not in (2, 6) or interlace:
+                raise ValueError("只支持 8 位 RGB / RGBA、不交错")
+            bpp = 3 if ctype == 2 else 4
+        elif kind == b"IDAT":
+            idat.append(chunk)
+        elif kind == b"IEND":
+            break
+        pos += 12 + n
+    raw = zlib.decompress(b"".join(idat))
+    stride = w * bpp
+    rows_, prev = [], bytearray(stride)
+    for y in range(h):
+        f = raw[y * (stride + 1)]
+        line = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for i in range(stride):
+            a = line[i - bpp] if i >= bpp else 0
+            up, c = prev[i], (prev[i - bpp] if i >= bpp else 0)
+            if f == 1:
+                line[i] = (line[i] + a) & 255
+            elif f == 2:
+                line[i] = (line[i] + up) & 255
+            elif f == 3:
+                line[i] = (line[i] + ((a + up) >> 1)) & 255
+            elif f == 4:
+                p = a + up - c
+                pa, pb, pc = abs(p - a), abs(p - up), abs(p - c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else up if pb <= pc else c)) & 255
+        rows_.append(bytes(line))
+        prev = line
+    return w, h, bpp, rows_
+
+
+def enclosed_white_blobs(data, min_area):
+    """纯白（三个通道都 ≥ 250）像素的 4 连通块里，不碰图边、面积 ≥ min_area 的：被别的颜色整圈包住的白块。"""
+    w, h, bpp, rows_ = read_png(data)
+    white = [bytearray(1 if min(r[x * bpp:x * bpp + 3]) >= 250 else 0 for x in range(w)) for r in rows_]
+    seen = [bytearray(w) for _ in range(h)]
+    out = []
+    for y0 in range(h):
+        for x0 in range(w):
+            if not white[y0][x0] or seen[y0][x0]:
+                continue
+            stack, area, edge, box = [(x0, y0)], 0, False, [x0, y0, x0, y0]
+            seen[y0][x0] = 1
+            while stack:
+                x, y = stack.pop()
+                area += 1
+                edge = edge or x in (0, w - 1) or y in (0, h - 1)
+                box = [min(box[0], x), min(box[1], y), max(box[2], x), max(box[3], y)]
+                for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                    if 0 <= nx < w and 0 <= ny < h and white[ny][nx] and not seen[ny][nx]:
+                        seen[ny][nx] = 1
+                        stack.append((nx, ny))
+            if not edge and area >= min_area:
+                out.append((area, tuple(box)))
+    return out
+
+
+def tiny_png(w, h, pixel):
+    """合成一张 RGB PNG（逐行轮流用 0 / 1 / 2 / 4 号滤波，顺带检验解码器），pixel(x, y) → (r, g, b)。"""
+    import struct
+    import zlib
+    raw = bytearray()
+    prev = bytes(w * 3)
+    for y in range(h):
+        line = bytes(v for x in range(w) for v in pixel(x, y))
+        f = (0, 1, 2, 4)[y % 4]
+        enc = bytearray()
+        for i, v in enumerate(line):
+            a = line[i - 3] if i >= 3 else 0
+            up, c = prev[i], (prev[i - 3] if i >= 3 else 0)
+            if f == 4:
+                p = a + up - c
+                pa, pb, pc = abs(p - a), abs(p - up), abs(p - c)
+                pred = a if pa <= pb and pa <= pc else up if pb <= pc else c
+            else:
+                pred = (0, a, up)[f] if f < 3 else 0
+            enc.append((v - pred) & 255)
+        raw += bytes([f]) + enc
+        prev = line
+
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(bytes(raw))) + chunk(b"IEND", b""))
+
+
+class Drawings(unittest.TestCase):
+    """出图的版面问题：文字遮罩取的是视口背景色（白），开在色块上的字会连同色块一起被盖掉，只剩一个白块。"""
+
+    def test_white_box_detector_catches_a_masked_label(self):
+        """合成图：蓝底上一个 20×10 的白块（被蓝色包住）和一条贴边的白带——只有前者算数。"""
+        def px(x, y):
+            if 10 <= x < 30 and 8 <= y < 18 or y >= 27:
+                return (255, 255, 255)
+            return (20, 80, 160)
+        blobs = enclosed_white_blobs(tiny_png(48, 30, px), 100)
+        self.assertEqual(blobs, [(200, (10, 8, 29, 17))])
+
+    def test_numbers_in_the_length_spec_cells_are_not_masked(self):
+        """梁长布置图：每格的梁长数字写在色块上，不能开遮罩。开着遮罩时每格都有一个 200 像素以上的白块
+        （深色格的白字连同色块一起看不见）；修好后格里只剩字形笔画，最大的也不到 100 像素。"""
+        data = open(os.path.join(ROOT, "docs", "img", "length_specs.png"), "rb").read()
+        self.assertEqual(enclosed_white_blobs(data, 200), [])
+
+
 class IfcSchema(unittest.TestCase):
     def test_schema_validation_reports_nothing(self):
         issues = []

@@ -114,8 +114,9 @@ def dot(text, p, layer_path, size=16, rgb=(0, 0, 0)):
 _font = None
 
 
-def text(s, p, h, layer_path, rgb=(0, 0, 0), ha="c", va="m", plane_axes=((1, 0, 0), (0, 0, 1))):
-    """图纸上的注记：竖直图纸平面（XZ）里的文字，前视图可读。"""
+def text(s, p, h, layer_path, rgb=(0, 0, 0), ha="c", va="m", plane_axes=((1, 0, 0), (0, 0, 1)), mask=True):
+    """图纸上的注记：竖直图纸平面（XZ）里的文字，前视图可读。mask：文字压在线上时用背景色遮住线；
+    写在色块上的字要关掉——遮罩取的是视口背景色（白），会把色块和白字一起盖掉。"""
     global _font
     xa, ya = plane_axes
     pl = RG.Plane(RG.Point3d(*p), RG.Vector3d(*xa), RG.Vector3d(*ya))
@@ -133,9 +134,10 @@ def text(s, p, h, layer_path, rgb=(0, 0, 0), ha="c", va="m", plane_axes=((1, 0, 
     if _font:
         te.Font = _font
     try:                                   # 文字压在线上时用背景色遮住线，CAD 里的做法
-        te.MaskEnabled = True
-        te.MaskUsesViewportColor = True
-        te.MaskOffset = h * 0.15
+        te.MaskEnabled = mask
+        if mask:
+            te.MaskUsesViewportColor = True
+            te.MaskOffset = h * 0.15
     except Exception:
         pass
     a = attrs(layer_path, rgb, mat=False)
@@ -706,7 +708,7 @@ def draw_length_specs(r):
             crv = rect_curve(x0 + 0.4, z - CELL_H + 0.4, x0 + CELL_W - 0.4, z - 0.4, y)
             fill(crv, LG + "::填充", colors[spec_key(e)])
             rgb = (255, 255, 255) if colors[spec_key(e)] in MID_COLORS[:2] + END_COLORS[:2] else (0, 0, 0)
-            text("%.2f" % e.attrs["length"], (x0 + CELL_W / 2, y + -0.1, z - CELL_H / 2), 2.6, LG, rgb)
+            text("%.2f" % e.attrs["length"], (x0 + CELL_W / 2, y + -0.1, z - CELL_H / 2), 2.6, LG, rgb, mask=False)
     st = support_stations()
     z_head = CELL_H * 0 + 2.5
     for k in range(1, C.N_SPANS + 1):
