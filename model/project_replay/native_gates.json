@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "fixture_notice": "Synthetic QA approvals only; never field/project acceptance",
+  "rhino": "8.33.26188.13001",
+  "missing_approval_held": true,
+  "before_approval_hidden": true,
+  "at_approval_installing": true,
+  "after_work_erected": true,
+  "downstream_conversion_blocked": true,
+  "temporary_supports_retained": true,
+  "missing": {
+    "3dm": "bridge_2028-07-01_1000.3dm",
+    "png": "bridge_2028-07-01_1000.png",
+    "json": "bridge_2028-07-01_1000.json"
+  },
+  "approved": {
+    "3dm": "bridge_2027-07-01_1000.3dm",
+    "png": "bridge_2027-07-01_1000.png",
+    "json": "bridge_2027-07-01_1000.json"
+  }
+}

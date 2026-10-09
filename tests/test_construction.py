@@ -60,12 +60,13 @@ class CompletePlan(unittest.TestCase):
 
     def test_task_assumptions_are_explicit_and_export_is_json_ready(self):
         for task in self.plan["tasks"]:
-            self.assertEqual(task["example_assumption"], task["class"] not in ("precast", "girder"))
+            self.assertTrue(task["example_assumption"])
+            self.assertEqual(task["progress_basis"], "forecast_only_not_measured")
         exported = CP.serializable(self.plan)
         self.assertEqual(json.loads(json.dumps(exported)), exported)
         self.assertEqual(exported["finish"], "2027-02-20T16:00:00")
-        self.assertIn("工效与养护停留为可配置", exported["notice"])
-        self.assertIn("班组目前固定每幅每工种一组", exported["notice"])
+        self.assertIn("同源 JSON 配置", exported["notice"])
+        self.assertIn("synthetic release", exported["notice"])
         with self.assertRaises(ValueError):
             CP.build(self.elements, self.rows, {"pavement": {"work_hours": -1}})
         with self.assertRaises(ValueError):

@@ -33,6 +33,7 @@ GlobalId 由名称经 uuid5 推出、文件头时间戳固定，同一份模型�
     python scripts/export_ifc.py --check    # 重导一遍，与已提交的 IFC 逐字节比对
 """
 import datetime
+import json
 import math
 import os
 import sys
@@ -708,8 +709,8 @@ def build_schedule(f, r, products):
     sq = ifcopenshell.api.sequence
     wp = sq.add_work_plan(f, name="施工计划（工效为假设值）", predefined_type="PLANNED")
     ws = sq.add_work_schedule(f, name="梁场预制与架梁 4D 计划", predefined_type="PLANNED", work_plan=wp)
-    complete = CP.build(r["els"], r["rows"])
-    ws.Name = "完整示例施工计划（原架梁基线 + 可配置后续工序）"
+    complete = r["construction"]
+    ws.Name = "完整施工计划（" + complete["mode"] + "；非实测进度）"
     wp.Description = ws.Description = CP.NOTICE
     first, last = complete["start"], complete["finish"]
     for w in (wp, ws):                     # API 默认填当前时刻，固定下来才能逐字节复现
@@ -750,12 +751,24 @@ def build_schedule(f, r, products):
         actual[item["id"]] = t
         if cls == "conversion":
             t.ObjectType = "张拉负弯矩钢束、拆除临时支座"
-        t.Description = CP.NOTICE if item["example_assumption"] else "原预制/架梁基线"
+        t.Description = CP.NOTICE
+        t.Status = item["status"]
         ps = ifcopenshell.api.pset.add_pset(f, product=t, name="BridgeBIM_ConstructionTask")
         ifcopenshell.api.pset.edit_pset(f, pset=ps, properties={
             "ConstructionClass": cls, "ExampleAssumption": item["example_assumption"],
+            "ProgressBasis": item["progress_basis"],
             "WorkHours": item["work_hours"], "CureHours": item["cure_hours"],
-            "WorkFinish": _iso(item["work_finish"]), "Source": "bridge.construction"})
+            "WorkFinish": _iso(item["work_finish"]), "Source": json.dumps(item["source"], ensure_ascii=False, sort_keys=True),
+            "Mode": complete["mode"], "ConfigurationSHA256": complete["configuration_sha256"],
+            "CrewId": item["crew_id"], "EffectiveCrewId": item["effective_crew_id"],
+            "HoldReasons": json.dumps(item["hold_reasons"], ensure_ascii=False),
+            "ReleaseGates": json.dumps(item["gates"], ensure_ascii=False, sort_keys=True),
+            "EffectiveStart": _iso(item["effective_start"]) if item["effective_start"] else "HELD",
+            "EffectiveFinish": _iso(item["effective_finish"]) if item["effective_finish"] else "HELD",
+            "ReleaseAt": _iso(item["release_at"]) if item["release_at"] else "HELD"})
+        ifcopenshell.api.pset.edit_pset(f, pset=ps, properties={
+            "MachineLaunchBeforeHours": item["machine_launch_before_hours"],
+            "MachineTransferBeforeDays": item["machine_transfer_before_days"] if item["machine_transfer_before_days"] is not None else -1})
         for eid in item["elements"]:
             sq.assign_product(f, relating_product=products[eid], related_object=t)
         for eid in item["removes"]:
@@ -851,7 +864,14 @@ def export(path=MODEL_IFC, r=None):
 
 
 def main():
-    if "--check" in sys.argv:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
+    parser.add_argument("--construction-config", help="validated construction input JSON")
+    args = parser.parse_args()
+    if args.construction_config:
+        os.environ["BRIDGE_CONSTRUCTION_CONFIG"] = os.path.abspath(args.construction_config)
+    if args.check:
         tmp = os.path.join(tempfile.mkdtemp(), "bridge_bim.ifc")
         export(tmp)
         a = open(tmp, "rb").read()

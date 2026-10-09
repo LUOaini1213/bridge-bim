@@ -14,6 +14,7 @@
 from datetime import timedelta
 
 from . import config as C
+from . import construction_input as CI
 from .model import support_kind, support_name, unit_bounds
 
 
@@ -27,49 +28,59 @@ def sequence():
     return seq
 
 
-def plan(n_beds=None, yard_start=None, erect_start=None, ignore_ready=False):
+def plan(n_beds=None, yard_start=None, erect_start=None, ignore_ready=False, configuration=None):
     """ignore_ready=True：假定梁全部备齐，只受架桥机工时约束——得到架梁的机械极限工期。"""
-    n_beds = n_beds or C.N_BEDS
-    yard_start = yard_start or C.YARD_START
-    erect_start = erect_start or C.ERECT_START
+    settings = CI.load(configuration)
+    b, calendar = settings["baseline"], CI.Calendar(settings["calendar"])
+    if n_beds is not None and (type(n_beds) is not int or n_beds <= 0):
+        raise ValueError("n_beds must be a positive integer")
+    n_beds = b["n_beds"] if n_beds is None else n_beds
+    yard_start = yard_start or CI.day(b["yard_start"])
+    erect_start = erect_start or CI.day(b["erect_start"])
+    day_hours = settings["calendar"]["day_hours"]
+    def working_day(value):
+        return calendar.start(calendar.at(value)).date()
     seq = sequence()
     rows = []
     for j, (d, k, i) in enumerate(seq):
-        cast = yard_start + timedelta(days=(j * C.BED_CYCLE_DAYS) // n_beds)
+        cast = working_day(yard_start + timedelta(days=(j * b["bed_cycle_days"]) // n_beds))
+        # The same bed cannot be recast before the previous elapsed cycle ends.
+        if j >= n_beds:
+            cast = working_day(max(cast, rows[j - n_beds]["to_storage"]))
         rows.append({"girder": "G-%s%02d-%d" % (d, k, i), "deck": d, "span": k, "pos": i, "order": j + 1,
                      "bed": j % n_beds + 1, "cast": cast,
-                     "to_storage": cast + timedelta(days=C.BED_CYCLE_DAYS),
-                     "ready": cast + timedelta(days=C.MIN_AGE_DAYS)})
+                     "to_storage": working_day(cast + timedelta(days=b["bed_cycle_days"])),
+                     "ready": max(cast + timedelta(days=b["min_age_days"]), working_day(cast + timedelta(days=b["bed_cycle_days"])))})
     # 架桥机：日期 + 当日已用工时
-    day, used, idle_days = erect_start, 0.0, set()
+    day, used, idle_days = working_day(erect_start), 0.0, set()
     decks = [d for d, _ in C.DECKS]
     for r in rows:
         if r["pos"] == 1 and r["span"] == 1 and r["deck"] != decks[0]:
             # 转场：从下一个整日起算 TRANSFER_DAYS 天
-            day, used = day + timedelta(days=1 + C.TRANSFER_DAYS), 0.0
+            day, used = working_day(day + timedelta(days=1 + b["transfer_days"])), 0.0
         if not ignore_ready and day < r["ready"]:
             d0 = day + timedelta(days=1) if used > 0 else day
             while d0 < r["ready"]:
                 idle_days.add(d0)
                 d0 += timedelta(days=1)
-            day, used = r["ready"], 0.0
-        if used + C.ERECT_HOURS > C.DAY_HOURS + 1e-9:
-            day, used = day + timedelta(days=1), 0.0
+            day, used = working_day(r["ready"]), 0.0
+        if used + b["erect_hours"] > day_hours + 1e-9:
+            day, used = working_day(day + timedelta(days=1)), 0.0
         r["erect"], r["erect_hour"] = day, used      # 当天第几个工时开始架这一片
-        used += C.ERECT_HOURS
+        used += b["erect_hours"]
         last_in_span = r["pos"] == len(C.GIRDER_OFFSETS)
         if last_in_span and r["span"] < C.N_SPANS:
-            if used + C.LAUNCH_HOURS > C.DAY_HOURS + 1e-9:
-                day, used = day + timedelta(days=1), 0.0
-            used += C.LAUNCH_HOURS
+            if used + b["launch_hours"] > day_hours + 1e-9:
+                day, used = working_day(day + timedelta(days=1)), 0.0
+            used += b["launch_hours"]
     for r in rows:
         r["storage_days"] = (r["erect"] - r["to_storage"]).days
         r["age_at_erect"] = (r["erect"] - r["cast"]).days
     return rows, sorted(idle_days)
 
 
-def machine_bound_days(erect_start=None):
-    rows, _ = plan(erect_start=erect_start, ignore_ready=True)
+def machine_bound_days(erect_start=None, configuration=None):
+    rows, _ = plan(erect_start=erect_start, ignore_ready=True, configuration=configuration)
     first = min(r["erect"] for r in rows)
     return (max(r["erect"] for r in rows) - first).days + 1
 
@@ -85,9 +96,11 @@ def storage_curve(rows):
     return out
 
 
-def conversions(rows):
+def conversions(rows, configuration=None):
     """每幅每联的体系转换节点：[{幅, 联, 跨, 连续墩, 架完, 浇连续段, 体系转换}]。"""
     out = []
+    # Historical reference calculation, deliberately fixed at the original
+    # C lag/cure. The configured complete plan and gates live in construction.
     for d, _ in C.DECKS:
         for u, (a, b) in enumerate(unit_bounds(), 1):
             piers = [support_name(k) for k in range(a + 1, b) if support_kind(k) == "C"]
@@ -108,7 +121,7 @@ def yard_state(rows, day):
     return beds, [(i // C.STORAGE_LAYERS, i % C.STORAGE_LAYERS, r["girder"]) for i, r in enumerate(stored)]
 
 
-def summarize(rows, idle):
+def summarize(rows, idle, configuration=None):
     curve = storage_curve(rows)
     peak_day, peak = max(curve, key=lambda x: (x[1], x[0]))
     first = min(r["erect"] for r in rows)
@@ -116,10 +129,10 @@ def summarize(rows, idle):
     return {
         "cast_first": min(r["cast"] for r in rows), "cast_last": max(r["cast"] for r in rows),
         "erect_first": first, "erect_last": last, "erect_days": (last - first).days + 1,
-        "machine_bound_days": machine_bound_days(first),
-        "wait_days": (last - first).days + 1 - machine_bound_days(first),
+        "machine_bound_days": machine_bound_days(first, configuration),
+        "wait_days": (last - first).days + 1 - machine_bound_days(first, configuration),
         "storage_peak": peak, "storage_peak_day": peak_day,
         "storage_max_days": max(r["storage_days"] for r in rows),
         "age_min": min(r["age_at_erect"] for r in rows),
-        "conversion_last": max(c["conversion"] for c in conversions(rows)),
+        "conversion_last": max(c["conversion"] for c in conversions(rows, configuration)),
     }

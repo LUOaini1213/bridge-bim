@@ -51,8 +51,12 @@ def verify(path):
     if model is None or source is None:
         raise AssertionError("cannot read replay or complete source .3dm")
     verify_units(model, source)
-    result = compute()
-    expected = R.snapshot(result["els"], result["rows"], info["datetime"] if info["time_semantics"] == "exact_time" else info["date"])
+    if "construction_config" not in info:
+        raise AssertionError("replay must preserve its validated construction input")
+    result = compute(configuration=info["construction_config"])
+    expected = R.snapshot(result["els"], result["rows"], info["datetime"] if info["time_semantics"] == "exact_time" else info["date"], result["construction"])
+    if info.get("configuration_sha256") != expected["configuration_sha256"] or info.get("mode") != expected["mode"]:
+        raise AssertionError("saved input provenance/mode mismatch")
     actual, original = elements(model), elements(source)
     if set(actual) != set(expected["elements"]) or set(actual) != set(original):
         raise AssertionError("replay does not preserve the complete source BIM id set")
@@ -65,6 +69,19 @@ def verify(path):
             raise AssertionError(eid + ": wrong hour-level state")
         if attrs.GetUserString("replay_state") != state["phase"]:
             raise AssertionError(eid + ": wrong saved phase")
+        if state["task"]:
+            task = result["construction"]["by_id"][state["task"]]
+            required = {"construction_task":task["id"], "construction_start":task["start"].isoformat(),
+                        "construction_finish":task["finish"].isoformat(), "construction_mode":expected["mode"],
+                        "construction_config_sha256":expected["configuration_sha256"], "construction_crew":task["crew_id"],
+                        "construction_effective_crew":task["effective_crew_id"],
+                        "construction_effective_start":task["effective_start"].isoformat() if task["effective_start"] else "HELD",
+                        "construction_release_at":task["release_at"].isoformat() if task["release_at"] else "HELD",
+                        "construction_hold_reasons":json.dumps(task["hold_reasons"],ensure_ascii=False),
+                        "construction_release_gates":json.dumps(task["gates"],ensure_ascii=False,sort_keys=True)}
+            for key, value in required.items():
+                if attrs.GetUserString(key) != value:
+                    raise AssertionError(eid + ": wrong saved configuration/gate field " + key)
         if (attrs.Mode != rhino3dm.ObjectMode.Hidden) != state["visible"]:
             raise AssertionError(eid + ": actual .3dm hidden mode disagrees with schedule")
         if state["visible"]:
@@ -80,10 +97,13 @@ def verify(path):
         for point_a, point_b in ((a.Min, b.Min), (a.Max, b.Max)):
             if max(abs(getattr(point_a, axis) - getattr(point_b, axis)) for axis in ("X", "Y", "Z")) > 1e-7:
                 raise AssertionError(eid + ": original geometry bounds changed")
-    if info["counts"] != expected["counts"] or info["elements"] != expected["elements"]:
+    if info["counts"] != expected["counts"] or info["elements"] != expected["elements"] or info.get("tasks") != expected["tasks"] or info.get("effective_plan_finish") != expected["effective_plan_finish"]:
         raise AssertionError("JSON counters/states disagree with the current schedule")
     if dict(model.Strings).get("施工回放日期") != expected["date"]:
         raise AssertionError("document user text is missing the saved replay date")
+    strings = dict(model.Strings)
+    if strings.get("施工模式") != expected["mode"] or strings.get("施工配置") != json.dumps(expected["construction_config"],ensure_ascii=False,sort_keys=True) or strings.get("门禁待放行任务") != str(expected["counts"]["tasks_held"]):
+        raise AssertionError("saved native document input/mode/gates mismatch")
     if info.get("stage_result"):
         data = SR.build(result)
         stage = info["stage_result"]

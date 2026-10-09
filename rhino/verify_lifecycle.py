@@ -34,7 +34,6 @@ def main():
     with open(source, "rb") as handle:
         before_hash = hashlib.sha256(handle.read()).hexdigest()
     result = compute()
-    result["construction"] = CP.build(result["els"], result["rows"])
     with open(os.path.join(ROOT, "data", "stage_results.json"), encoding="utf-8") as handle:
         result["stage_data"] = json.load(handle)
     initial = result["construction"]["finish"] - timedelta(days=2)

@@ -4,6 +4,7 @@ from collections import OrderedDict, defaultdict
 from datetime import timedelta
 
 from . import alignment as AL, config as C, schedule as S, structure as ST, yard as Y
+from . import construction as CP, construction_input as CI
 from .checks import continuity_joints, run_all
 from .model import build, chords, equalize, naive_lengths, support_kind, support_name, support_stations
 
@@ -18,12 +19,19 @@ COUNT_ITEMS = OrderedDict([("bearing", "板式橡胶支座"), ("temp_support", "
 KIND_NAMES = {"A": "桥台", "T": "过渡墩", "C": "连续墩"}
 
 
-def compute(n_beds=None, erect_start=None):
+def compute(n_beds=None, erect_start=None, configuration=None):
+    settings = CI.load(configuration)
+    if n_beds is not None:
+        settings["baseline"]["n_beds"] = n_beds
+    if erect_start is not None:
+        settings["baseline"]["erect_start"] = erect_start.isoformat()
+    settings = CI.validate(settings)
     els, sup = build()
-    rows, idle = S.plan(n_beds=n_beds, erect_start=erect_start)
-    sm = S.summarize(rows, idle)
+    rows, idle = S.plan(n_beds=n_beds, erect_start=erect_start, configuration=settings)
+    sm = S.summarize(rows, idle, configuration=settings)
     return {"els": els, "sup": sup, "rows": rows, "idle": idle, "summary": sm,
-            "by_id": {e.eid: e for e in els}, "plan": {r["girder"]: r for r in rows}}
+            "by_id": {e.eid: e for e in els}, "plan": {r["girder"]: r for r in rows},
+            "construction_config": settings, "construction": CP.build(els, rows, configuration=settings)}
 
 
 def structure(r):
@@ -490,19 +498,20 @@ def conversion_rows(r):
     return [OrderedDict([("deck", m["deck"]), ("unit", m["unit"]), ("spans", "%d–%d" % m["spans"]),
                          ("piers", " ".join(m["piers"])), ("erected", m["erected"].isoformat()),
                          ("continuity_cast", m["cast"].isoformat()), ("conversion", m["conversion"].isoformat())])
-            for m in S.conversions(r["rows"])]
+            for m in S.conversions(r["rows"], r["construction_config"])]
 
 
 BEDS_SWEEP = (8, 10, 12, 14, 16, 18)
 LEAD_SWEEP = (14, 21, 28, 35, 42)
 
 
-def sensitivity_rows():
+def sensitivity_rows(configuration=None):
+    settings = CI.load(configuration)
     out = []
     for nb in BEDS_SWEEP:
         for lead in LEAD_SWEEP:
-            rows, idle = S.plan(n_beds=nb, erect_start=C.YARD_START + timedelta(days=lead))
-            m = S.summarize(rows, idle)
+            rows, idle = S.plan(n_beds=nb, erect_start=CI.day(settings["baseline"]["yard_start"]) + timedelta(days=lead), configuration=settings)
+            m = S.summarize(rows, idle, configuration=settings)
             fits = m["storage_peak"] <= Y.capacity() and m["storage_max_days"] <= C.MAX_STORAGE_DAYS
             out.append(OrderedDict([("beds", nb), ("lead_days", lead), ("erect_days", m["erect_days"]),
                                     ("wait_days", m["wait_days"]), ("storage_peak", m["storage_peak"]),
@@ -519,7 +528,7 @@ def minimal_beds(rows):
 def all_checks(r):
     out = [{"group": "模型", "name": n, "pass": bool(ok), "detail": m} for n, ok, m in run_all(r["els"])]
     heaviest = max(e.volume for e in r["els"] if e.cls == "girder") * C.RC_DENSITY_T
-    out += [{"group": "梁场与架梁", "name": n, "pass": bool(ok), "detail": m} for n, ok, m in Y.run_checks(r["summary"], heaviest)]
+    out += [{"group": "梁场与架梁", "name": n, "pass": bool(ok), "detail": m} for n, ok, m in Y.run_checks(r["summary"], heaviest, r["construction_config"])]
     out += [{"group": "上部结构", "name": n, "pass": bool(ok), "detail": m}
             for n, ok, m in ST.run_checks(structure(r), r["els"])]
     return out

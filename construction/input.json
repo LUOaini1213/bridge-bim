@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "mode": "simulation",
+  "source": {"id": "bridge-example-v1", "reference": "README.md construction example; demonstration assumptions", "author": "bridge-bim"},
+  "calendar": {"weekdays": [0, 1, 2, 3, 4, 5, 6], "rest_dates": [], "work_dates": [], "start_hour": 8, "day_hours": 10},
+  "baseline": {"yard_start": "2026-11-16", "erect_start": "2026-12-07", "n_beds": 16, "bed_cycle_days": 7, "min_age_days": 14, "erect_hours": 2, "launch_hours": 6, "transfer_days": 4, "continuity_lag_days": 1},
+  "durations": {
+    "diaphragm": {"work_hours": 4, "cure_hours": 48},
+    "wet_joint": {"work_hours": 4, "cure_hours": 48},
+    "cantilever": {"work_hours": 4, "cure_hours": 48},
+    "continuity": {"work_hours": 10, "cure_hours": 168},
+    "conversion": {"work_hours": 2, "cure_hours": 0},
+    "pavement": {"work_hours": 20, "cure_hours": 72},
+    "barrier": {"work_hours": 20, "cure_hours": 72},
+    "expansion_joint": {"work_hours": 4, "cure_hours": 0}
+  },
+  "crews": {
+    "L": {"diaphragm": 1, "wet_joint": 1, "cantilever": 1, "continuity": 1, "conversion": 1, "pavement": 1, "barrier": 1, "expansion_joint": 1},
+    "R": {"diaphragm": 1, "wet_joint": 1, "cantilever": 1, "continuity": 1, "conversion": 1, "pavement": 1, "barrier": 1, "expansion_joint": 1}
+  },
+  "releases": []
+}

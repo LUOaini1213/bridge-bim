@@ -36,6 +36,7 @@ def main():
     parser.add_argument("--verify-panel", action="store_true", help="在原生 Rhino 内创建非模态 Eto 面板并验证播放、查询及阶段切换")
     parser.add_argument("--spatial-quality", action="store_true", help="批量结束后在同进程调用原生三维预制梁质量检查")
     parser.add_argument("--output-dir", help="回放产物目录；默认为 model/replay")
+    parser.add_argument("--construction-config", help="同源施工 input JSON；缺失或无效立即拒绝")
     args = parser.parse_args()
     if sum(bool(value) for value in (args.replay, args.dates, args.jobs)) > 1:
         parser.error("--replay、--dates 与 --jobs 任选一个")
@@ -89,6 +90,11 @@ def main():
     if " " in script:
         sys.exit("临时脚本路径含空格：%s" % script)
     env = dict(os.environ, BRIDGE_BIM_ROOT=ROOT)
+    if args.construction_config:
+        from bridge.construction_input import load
+        config_path = os.path.abspath(args.construction_config)
+        load(config_path)
+        env["BRIDGE_CONSTRUCTION_CONFIG"] = config_path
     # Do not inherit a previous replay mode into a normal model build.
     for key in ("BRIDGE_REPLAY_DATE", "BRIDGE_REPLAY_DATES", "BRIDGE_REPLAY_JOBS", "BRIDGE_REPLAY_OUT", "BRIDGE_REPLAY_LOG", "BRIDGE_REPLAY_STAGE", "BRIDGE_REPLAY_LINE", "BRIDGE_PANEL_TEST", "BRIDGE_SPATIAL_QA"):
         env.pop(key, None)

@@ -7,6 +7,7 @@
 import math
 
 from . import alignment as AL, config as C
+from . import construction_input as CI
 
 
 def frame():
@@ -23,14 +24,14 @@ def to_world(pu, pv):
     return (ox + pu * u[0] + pv * v[0], oy + pu * u[1] + pv * v[1])
 
 
-def beds(n=None):
-    n = n or C.N_BEDS
+def beds(n=None, configuration=None):
+    n = CI.load(configuration)["baseline"]["n_beds"] if n is None else n
     pitch = C.BED_W + C.BED_GAP
     return [(i * pitch, 0.0, i * pitch + C.BED_W, C.BED_L) for i in range(n)]
 
 
-def storage():
-    start = C.N_BEDS * (C.BED_W + C.BED_GAP) + 8.0
+def storage(configuration=None):
+    start = CI.load(configuration)["baseline"]["n_beds"] * (C.BED_W + C.BED_GAP) + 8.0
     pitch = C.SLOT_W + C.SLOT_GAP
     return [(start + i * pitch, 0.0, start + i * pitch + C.SLOT_W, C.BED_L) for i in range(C.STORAGE_POSITIONS)]
 
@@ -40,21 +41,21 @@ def rebar_area():
     return (-w - 6.0, 0.0, -6.0, l)
 
 
-def rails():
+def rails(configuration=None):
     """龙门吊轨道：两条沿 u 向的直线，跨越台座全长两侧。"""
-    s = storage()
+    s = storage(configuration)
     u0, u1 = rebar_area()[0], s[-1][2] + 4.0
     return [((u0, -3.0), (u1, -3.0)), ((u0, C.BED_L + 3.0), (u1, C.BED_L + 3.0))]
 
 
-def boundary():
-    s = storage()
+def boundary(configuration=None):
+    s = storage(configuration)
     return (rebar_area()[0] - 6.0, -10.0, s[-1][2] + 10.0, C.BED_L + 10.0)
 
 
-def haul_route():
+def haul_route(configuration=None):
     """运梁便道：梁场出口 → 路基 → 0 号桥台（右幅中心线）。返回世界坐标折线。"""
-    b = boundary()
+    b = boundary(configuration)
     right = dict(C.DECKS)["R"]
     join = min(C.YARD_STATION + b[2] + 15.0, C.BRIDGE_START - 10.0)   # 上路基的位置，不越过桥台
     return [to_world(b[2], -4.0), AL.offset_xy(join, right), AL.offset_xy(C.BRIDGE_START, right)]
@@ -80,16 +81,17 @@ def capacity():
     return C.STORAGE_POSITIONS * C.STORAGE_LAYERS
 
 
-def run_checks(summary, heaviest_t):
+def run_checks(summary, heaviest_t, configuration=None):
     lift = C.GANTRY_COUNT * C.GANTRY_SWL_T * C.DUAL_LIFT_FACTOR
-    dist = _min_dist_to_road([boundary()])
+    dist = _min_dist_to_road([boundary(configuration)])
+    min_age = CI.load(configuration)["baseline"]["min_age_days"]
     return [
         ("存梁峰值 ≤ 存梁容量（%d 个台座 × %d 层）" % (C.STORAGE_POSITIONS, C.STORAGE_LAYERS),
          summary["storage_peak"] <= capacity(), "容量 %d 片，峰值 %d 片（%s）" % (
              capacity(), summary["storage_peak"], summary["storage_peak_day"].isoformat())),
         ("存梁期 ≤ %d 天" % C.MAX_STORAGE_DAYS, summary["storage_max_days"] <= C.MAX_STORAGE_DAYS,
          "最长 %d 天" % summary["storage_max_days"]),
-        ("架设时龄期 ≥ %d 天" % C.MIN_AGE_DAYS, summary["age_min"] >= C.MIN_AGE_DAYS, "最短 %d 天" % summary["age_min"]),
+        ("架设时龄期 ≥ %d 天" % min_age, summary["age_min"] >= min_age, "最短 %d 天" % summary["age_min"]),
         ("龙门吊抬吊能力 ≥ 最重预制梁", lift >= heaviest_t,
          "%d 台 × %.0f t × %.1f = %.0f t，最重梁 %.1f t" % (C.GANTRY_COUNT, C.GANTRY_SWL_T, C.DUAL_LIFT_FACTOR, lift, heaviest_t)),
         ("梁场不占路基（距路线中线 ≥ %.0f m）" % C.MIN_YARD_TO_ROAD, dist >= C.MIN_YARD_TO_ROAD,
@@ -97,5 +99,5 @@ def run_checks(summary, heaviest_t):
     ]
 
 
-def haul_length():
-    return _length(haul_route())
+def haul_length(configuration=None):
+    return _length(haul_route(configuration))

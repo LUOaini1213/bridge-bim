@@ -11,7 +11,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from bridge import config as C, yard as Y, construction as CP, stage_results as SR  # noqa: E402
+from bridge import config as C, yard as Y, construction as CP, construction_input as CI, stage_results as SR  # noqa: E402
 from bridge import pipeline as P                     # noqa: E402
 from bridge.numcmp import compare, compare_stage_json, stage_roundoff_summary  # noqa: E402
 
@@ -28,7 +28,7 @@ def csv_text(rows):
 
 def outputs():
     r = P.compute()
-    sens = P.sensitivity_rows()
+    sens = P.sensitivity_rows(r["construction_config"])
     best = P.minimal_beds(sens)
     checks = P.all_checks(r)
     specs = P.length_spec_rows(r)
@@ -38,16 +38,16 @@ def outputs():
         "bearings": sum(1 for b in r["sup"] if b["kind"] != "temp"),
         "temp_supports": sum(1 for b in r["sup"] if b["kind"] == "temp"),
         "length_specs": len(specs), "length_specs_naive": P.naive_spec_count(),
-        "storage_capacity": Y.capacity(), "haul_route_m": round(Y.haul_length(), 1),
+        "storage_capacity": Y.capacity(), "haul_route_m": round(Y.haul_length(r["construction_config"]), 1),
         "checks_passed": sum(c["pass"] for c in checks), "checks_total": len(checks),
-        "beds": C.N_BEDS, "lead_days": (C.ERECT_START - C.YARD_START).days,
+        "beds": r["construction_config"]["baseline"]["n_beds"], "lead_days": (CI.day(r["construction_config"]["baseline"]["erect_start"]) - CI.day(r["construction_config"]["baseline"]["yard_start"])).days,
         "min_beds_zero_wait": best["beds"] if best else None,
         "min_beds_zero_wait_lead": best["lead_days"] if best else None,
     })
     sm.update(P.structure_summary(r))
     return {
-        "construction_tasks.csv": csv_text(CP.table(CP.build(r["els"], r["rows"]))),
-        "construction_plan.json": json.dumps(CP.serializable(CP.build(r["els"], r["rows"])), ensure_ascii=False, indent=1) + "\n",
+        "construction_tasks.csv": csv_text(CP.table(r["construction"])),
+        "construction_plan.json": json.dumps(CP.serializable(r["construction"]), ensure_ascii=False, indent=1) + "\n",
         "stage_results.json": json.dumps(SR.build(r), ensure_ascii=False, indent=1) + "\n",
         "alignment_stations.csv": csv_text(P.alignment_rows()),
         "elements.csv": csv_text([{"eid": e.eid, "class": e.cls, "part": e.part, "deck": e.deck,
@@ -76,8 +76,15 @@ def outputs():
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
+    parser.add_argument("--construction-config", help="validated construction input JSON")
+    args = parser.parse_args()
+    if args.construction_config:
+        os.environ["BRIDGE_CONSTRUCTION_CONFIG"] = os.path.abspath(args.construction_config)
     files = outputs()
-    if "--check" in sys.argv:
+    if args.check:
         bad, loose = [], 0
         for n, t in files.items():
             path = os.path.join(DATA, n)
