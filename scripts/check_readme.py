@@ -197,6 +197,8 @@ def bearing_movement_claims():
 
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     cls = Counter(r["class"] for r in ELEMENTS)
     kinds = Counter(M.support_kind(k) for k in range(C.N_SPANS + 1))
     st = M.support_stations()

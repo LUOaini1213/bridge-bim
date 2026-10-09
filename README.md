@@ -32,8 +32,8 @@ byte-reproducible. CI re-derives every number in this README from the committed 
   改用四氟滑板支座；连续墩的普通板式支座剪切变形利用率 **0.822**。横向分布按教材更严的窄桥判别 θ' = **0.408** > 0.3，
   另用 G-M 法算一遍取大值
 - 检查：模型 17 条 + 梁场与架梁 5 条 + 上部结构 10 条，**32/32** 通过；每条都有一个故意弄坏的反例，证明它会变红
-- 4D：梁场 **16** 个台座提前 **21** 天开工，架桥机 **50** 天架完 120 片、**0** 天等梁；存梁峰值 **34** 片（容量 **40**）；**2027-02-02** 完成全部体系转换
-- IFC 4.3：**102,118** 个实体，schema 校验 **0** 个问题；几何引擎逐件算出实体，体积与位置和模型一致到 1e-6
+- 4D 原基线：梁场 **16** 个台座提前 **21** 天开工，架桥机 **50** 天架完 120 片、**0** 天等梁；存梁峰值 **34** 片（容量 **40**）；**2027-02-02** 完成全部体系转换。新增完整示例计划含后续工序，默认转换与收尾日期见下文
+- IFC 4.3：**106,181** 个实体，schema 校验 **0** 个问题；几何引擎逐件算出实体，体积与位置和模型一致到 1e-6
 - 下文每个数字都由 `scripts/check_readme.py` 对着已提交的产物回算，CI 每次提交都跑
 
 路线、地形、桥梁都是虚构的示例；尺寸、工效、设备能力这些不是物理常数的参数集中在
@@ -407,7 +407,7 @@ BridgeBIM_Structural 里带着内力设计值、挠度、反力与压应力，�
 零等梁又放得下的方案里台座最少的是 **16** 个、提前 **21** 天——就是采用的方案；14 个台座怎么调提前量都做不到
 两全。全表在 [`data/sensitivity.csv`](data/sensitivity.csv)。
 
-每幅每联最后一片梁架完的第二天浇墩顶连续段，7 天后张拉负弯矩钢束、拆临时支座：
+以下是 `bridge/schedule.py` 保留的原基线（供原图纸、敏感性与支座龄期计算对照）：每幅每联最后一片梁架完的第二天浇墩顶连续段，7 天后张拉负弯矩钢束、拆临时支座。新增完整示例计划按后续工序依赖顺延，IFC 与新 Rhino 时间轴使用新计划：
 
 | 幅 | 联 | 跨 | 连续墩 | 架完 | 浇连续段 | 体系转换 |
 |---|---|---|---|---|---|---|
@@ -422,7 +422,57 @@ BridgeBIM_Structural 里带着内力设计值、挠度、反力与压应力，�
 
 ![存梁峰值日的梁场：台座上在制 16 片、存梁区 34 片](docs/img/yard.png)
 
-湿接缝、铺装、护栏不在这份计划里。
+上面原基线图与表不含湿接缝、铺装、护栏；完整示例计划补齐这些工序。
+
+### Rhino 时间轴、完整示例计划与阶段结果
+
+先打开 `model/bridge_bim.3dm`，在 Rhino 8 Python 编辑器运行
+[`rhino/replay_construction.py`](rhino/replay_construction.py)，弹出 **Eto 非模态面板**，可继续操作 Rhino。
+输入日期/小时/分钟、拖动时间轴、前后跳任务节点，设置每帧推进小时并播放/暂停。
+输入 BIM 编号或在视口选中构件再查询，可见其施工、养护、完成时刻及已有阶段结果。
+关闭面板会停止计时器；再次运行只保留一个面板。
+
+[`bridge/construction.py`](bridge/construction.py) 是 IFC、Rhino、CSV/JSON 共用的完整示例计划。
+原预制、架梁时刻保持不变；横隔板 → 湿接缝 → 翼缘现浇（每跨）→ 连续段/养护 → 体系转换（每联）
+→ 铺装/养护 → 护栏/养护 → 伸缩装置（相邻两联完成后）有明确完成—开始依赖。
+同幅同工种一班组，施工按原每日工作时段计，养护按连续时间计，施工班组可在养护期间转到下一跨。
+默认横隔板、湿接缝、翼缘每跨各施工 4 h、养护 48 h；铺装、护栏每联各施工 20 h、养护 72 h；
+伸缩装置每个施工 4 h，转换作业 2 h（`CONVERSION_WORK_HOURS`）；连续段沿用原每日工时与 7 天养护。
+后续配置在 `construction.ASSUMPTIONS`，`build(..., assumptions={...})` 可覆盖。
+**这些工效、班组与养护停留是演示假设，非现场实测，也不代表混凝土强度验收。**
+默认全部体系转换顺延至 **2027-02-09 18:00**，后续收尾至 **2027-02-20 16:00**；
+[`data/construction_tasks.csv`](data/construction_tasks.csv) 和 [`data/construction_plan.json`](data/construction_plan.json)
+列出每项任务与依赖。原基线转换日期保留在 `data/conversions.csv`。
+
+面板可选择 30 条梁位线及 **M1（一期恒载）/ Mc（体系转换增量）/ M2（二期恒载增量）/ MG（恒载合计）**。
+紫色弯矩曲线、带符号反力箭头和有效/无效支承标记生成在“施工阶段结果”层；三维用短标号，截图顶部表格列完整ID及数值。
+弯矩图比例自适应，反力箭头长度仅示意，精确值以表格为准。Mc 的临时支座拆除作用单独标注，
+不冒充剩余支座反力。数据来自原 `bridge.structure.analyse`，保存在 [`data/stage_results.json`](data/stage_results.json)，
+可独立读回核对原生曲线坐标、支座状态与反力。
+**这是既有整联载荷工况的查看器；Mc/M2 为增量，日期回放不重新求解部分安装结构。**
+原工程结果与原基线支座龄期保持不变；新增示例日历不会自动替换工程分析的施工龄期。
+未舍入的阶段 JSON 单独按类型/字段/顺序严格互核。各条 M1/Mc/M2/MG 弯矩曲线沿用 OpenSees 互核的向量门槛：逐点差不超过 `max(2e-9, 1e-9 × max(1, 两份该曲线的最大绝对弯矩))`，覆盖刚度恢复内力时的消去误差；坐标、反力及其他浮点仍按逐值相对门槛 1e-9、绝对下限 2e-9 比对。`build_data.py --check` 输出全部浮点差异的分工况最大绝对误差、门槛比和所有超限位置，供跨平台 CI 核验。
+原工程表仍保持原固定小数位的门槛，ID、整数与布尔值没有浮点容差。
+
+也可让本机 Rhino 自动导出指定日期；原完整模型和已发布的结构计算结果不会被覆盖：
+
+```powershell
+python scripts/run_rhino.py --replay 2026-12-21
+python scripts/check_replay.py model/replay/bridge_2026-12-21.3dm
+python scripts/run_rhino.py --replay 2027-02-20T16:00 --stage Mc --line L-U2-G3 --verify-panel
+python scripts/check_replay.py model/replay/bridge_2027-02-20_1600_Mc_L-U2-G3.3dm
+python scripts/run_rhino.py --dates 2026-12-06 2026-12-21 2027-02-02
+python scripts/run_rhino.py --jobs rhino/verification_jobs.json --verify-panel
+```
+
+产物位于 `model/replay/`：带日期/时刻/阶段的 `.3dm`、原生视口 PNG 和逐构件状态 JSON；
+`--output-dir` 可指定其他目录。独立读回检查核对实际对象显隐、原编号与 BIM 属性、几何包围盒及排程计数。
+[`bridge/replay.py`](bridge/replay.py) 的日期状态计算只用标准库，边界测试纳入 CI。
+
+日期单独输入采用日末语义；带时刻输入可区别安装中、施工中、养护、已完成。
+完整几何在任务开始时出现，未模拟吊装运动、混凝土体积渐增。临时支座按新转换任务的实际结束时刻拆除。
+下部结构、垫石和永久支座为灰色静态参照，不能据此推断它们在该日期已完成。
+梁场峰值快照隐藏，当前在制与存梁数按原排程时刻统计。首次生成阶段数据请执行 `python scripts/build_data.py`。
 
 ## 图纸
 
@@ -446,9 +496,11 @@ BridgeBIM_Structural 里带着内力设计值、挠度、反力与压应力，�
 - **属性与工程量**：每个构件带 BridgeBIM_Element（编号、所属联 / 墩台、梁长、端部类型、缝宽、预制与架设日期、
   支座顶与垫石高程……），标准的 Pset_BeamCommon、Pset_ConcreteElementGeneral、Pset_PrecastConcreteElementGeneral，
   以及按类别的 Qto_*BaseQuantities；标准工程量集里没有体积的类别，体积写进 Qto_BodyGeometryValidation。
-- **4D**：IfcWorkPlan → IfcWorkSchedule 下 261 个 IfcTask（预制 120、架设 120、连续段浇筑与体系转换各 6，另有汇总任务），
+- **4D**：IfcWorkPlan → IfcWorkSchedule 下 354 个 IfcTask（预制 120、架设 120、连续段浇筑与体系转换各 6，另有后续工序与汇总任务），
   架设任务以 IfcRelAssignsToProduct 产出对应的梁，体系转换任务以 IfcRelAssignsToProcess 消耗（拆除）临时支座；
-  251 条 IfcRelSequence 的时差都按两端任务的实际时刻算出。
+  461 条 IfcRelSequence 的时差都按两端任务的实际时刻算出。新增工序产出既有真实构件，
+  `BridgeBIM_ConstructionTask` 记录工序类别、演示假设标记、施工工时、养护工时及施工结束时间；
+  IFC 与 Rhino 使用同一份完整示例计划，原架设/拆除关联保留。
 - **结构分析**：两个 IfcStructuralAnalysisModel，按施工阶段分开。阶段一「预制梁简支」：360 根 IfcStructuralCurveMember
   （每片梁两端外伸段 + 支座间）、480 个 IfcStructuralPointConnection，其中 240 个带 IfcBoundaryNodeCondition
   （伸缩端永久支座与临时支座）。阶段二「体系转换后的连续梁」：360 根杆件（每条梁位线 12 段）、390 个节点，
@@ -475,10 +527,29 @@ BridgeBIM_Structural 里带着内力设计值、挠度、反力与压应力，�
 | 伸缩装置 | IfcDiscreteAccessory | EXPANSION_JOINT_DEVICE | 8 |
 | 桥台背墙 | IfcWall | RETAININGWALL | 4 |
 
-文件共 **102,118** 个实体，ifcopenshell 的 schema 校验 **0** 个问题。GlobalId 由名称经 uuid5 推出、文件头时间戳固定，
+文件共 **106,181** 个实体，ifcopenshell 的 schema 校验 **0** 个问题。GlobalId 由名称经 uuid5 推出、文件头时间戳固定，
 同一份模型每次导出逐字节相同；在另一台机器上重导时，数学库末位的差别只允许落在浮点数的 1e-9（相对）以内，
 结构、编号、文字必须逐字相同（[`bridge/numcmp.py`](bridge/numcmp.py)）。交给几何引擎（OpenCascade）逐件算成实体后：
 斜拉伸加两次布尔切割的 T 梁与多面体，体积和包围盒都与模型差 < 1e-6；圆柱被引擎离散成多边形，体积差 < 0.5%。
+
+### 原生三维几何校核
+
+`rhino/check_clearance.py` 读取源模型中全部 120 片预制梁的实际闭合网格，保留各平面面片转成 Brep，
+把模型的米转换为毫米后检查梁与梁的实体相交体积及可配置净距。默认净距为 25 mm；
+支座与设计现浇连接不在此报告范围内，网格见证点不声称为精确最短距离。
+源模型不写回；碰撞、净距/接触、几何内核未决分别记录构件编号、Rhino GUID、零件和位置。
+空或失败的布尔结果必须有经验证的几何证明才能判无碰撞，否则列为未决。
+原生反例覆盖穿透、完全包含、不同高度、阈值、仅接触及包络重叠但位于孔洞中的情况，
+另注入失败的交线 API，要求产生未决而非通过。
+
+```bash
+python scripts/run_spatial_quality.py --clearance-mm 25  # 需要 Rhino 8
+python scripts/check_spatial_quality.py                 # 无需 Rhino，核对真实源身份/单位并生成 HTML
+```
+
+报告在 `model/quality/native_spatial.{json,html}`；信息交付的 IDS 校核由 `scripts/check_ids.py` 单独执行。
+实现参考：[Rhino MeshClash](https://mcneel.github.io/rhinocommon-api-docs/api/RhinoCommon/html/M_Rhino_Geometry_Intersect_MeshClash_Search_4.htm)、
+[IfcTester / IDS](https://docs.ifcopenshell.org/ifctester.html)。
 
 ## 复现
 
@@ -488,15 +559,18 @@ python -m venv .venv
 python scripts/build_data.py              # 重算 data/（只用标准库）
 python scripts/export_ifc.py              # 写 model/bridge_bim.ifc
 python scripts/run_rhino.py               # 需要本机 Rhino 8：建模、出图、存 .3dm
-python -m unittest tests.test_alignment tests.test_model tests.test_schedule tests.test_structure
+python -m unittest tests.test_alignment tests.test_model tests.test_schedule tests.test_structure tests.test_replay tests.test_construction tests.test_stage_results
 python -m pytest tests                    # 全部测试（含与 OpenSees 互核）
 python scripts/check_readme.py            # README 里的数字逐个回算
+python scripts/check_ids.py               # quality/delivery.ids + profile.json 信息交付规则，写 model/quality/IDS 报告
+python scripts/check_replay.py --all       # 强制八份正式 + 面板导出 QA 产物完整，并独立读回单位/几何/状态/真实阶段结果
+python scripts/check_lifecycle.py         # 已保存的原生关闭文档/旧面板隔离/重新打开面板证据
 python scripts/tamper_drill.py            # 篡改演练：改一处产物，必须有检查变红
 python scripts/mutation_drill.py          # 变异演练：把求解器改错一处，必须有测试失败
 ```
 
 CI 跑两组：`bridge/` 只用标准库、兼容 Python 3.9（Rhino 8 内置的 CPython 就是 3.9，建模脚本 import 同一份代码），
-先单独跑一遍不装任何依赖的测试；再装 ifcopenshell、rhino3dm 与 openseespy 跑全部 177 个测试、重导 IFC 比对、回算 README。
+先单独跑一遍不装任何依赖的测试；再装 ifcopenshell、rhino3dm 与 openseespy 跑全部 204 个测试、重导 IFC 比对、回算 README。
 OpenSeesPy 只在测试里用，拿来互核自写的求解器（它的许可对研究、教学与内部使用免费）。
 Rhino 那一步在本机跑，它的产物 `model/bridge_bim.3dm` 由 rhino3dm 独立读回来核。
 
@@ -509,12 +583,15 @@ Rhino 那一步在本机跑，它的产物 `model/bridge_bim.3dm` 由 rhino3dm �
 | `bridge/model.py` | 构件生成：分联、梁长归并（区间刺穿 + 证书）、T 梁斜切棱柱、现浇部分、下部结构 |
 | `bridge/checks.py` | 17 条模型检查 |
 | `bridge/schedule.py` / `bridge/yard.py` | 梁场预制、存梁、架梁、体系转换；梁场布置与 5 条检查 |
+| `bridge/construction.py` / `bridge/replay.py` | 完整示例任务、班组/养护依赖与小时级施工状态 |
+| `bridge/stage_results.py` / `rhino/stage_viewer.py` / `rhino/timeline_panel.py` | 既有阶段弯矩/反力/支承与非模态 Eto 时间轴 |
 | `bridge/structure.py` | 上部结构计算：截面、横向分布（含 G-M 法）、施工阶段、影响线加载、频率与冲击系数、组合、挠度、支座位移与验算；10 条结构检查 |
 | `bridge/pipeline.py` | 交付表：梁长、垫石标高、工程量、逐桩坐标、排程、敏感性、内力、支座反力、支座位移 |
 | `rhino/build_model.py` | Rhino 8 建模、剖切出横断面、弯矩包络图、按内力着色、出图 |
 | `scripts/` | 数据重算、IFC 导出（含结构分析模型）、调起 Rhino、README 回算、篡改演练、变异演练 |
 | `tests/` | 路线、模型与反例、排程、结构计算（闭式解、OpenSees 互核、反例）、产物互核、README |
-| `data/` | 22 个表（CSV / JSON） |
+| `data/` | 25 个表（CSV / JSON） |
+| `quality/delivery.ids` / `scripts/check_ids.py` | IDS 交付要求与 IFC 信息完整性报告 |
 | `model/` | `.3dm`、IFC、Rhino 构建日志 |
 
 ## 范围

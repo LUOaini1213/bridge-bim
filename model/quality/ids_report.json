@@ -1,0 +1,166 @@
+{
+  "status": true,
+  "total_specifications": 4,
+  "total_specifications_pass": 4,
+  "total_specifications_fail": 0,
+  "total_checks": 8659,
+  "total_checks_pass": 8659,
+  "total_checks_fail": 0,
+  "title": "Bridge BIM IFC delivery requirements",
+  "model": "model/bridge_bim.ifc",
+  "schema": "IFC4X3_ADD2",
+  "ids": "quality/delivery.ids",
+  "ids_sha256": "3b8bed8cec85a037f5e8d532c1f1fc042d8835dc86d596eecfb14d9f0aff620f",
+  "ifctester_version": "0.8.5",
+  "specifications": [
+    {
+      "name": "Engineering element classification identity and material",
+      "status": true,
+      "is_ifc_version": true,
+      "total_applicable": 1470,
+      "total_applicable_fail": 0,
+      "total_checks": 7350,
+      "total_checks_fail": 0,
+      "requirements": [
+        {
+          "label": "Name",
+          "description": "The Name shall be {'pattern': '.+'}",
+          "status": true,
+          "total_applicable": 1470,
+          "total_fail": 0,
+          "failed_entities": []
+        },
+        {
+          "label": "BridgeBIM_Element.ElementID",
+          "description": "ElementID data shall be {'pattern': '.+'} and in the dataset BridgeBIM_Element",
+          "status": true,
+          "total_applicable": 1470,
+          "total_fail": 0,
+          "failed_entities": []
+        },
+        {
+          "label": "BridgeBIM_Element.Category",
+          "description": "Category data shall be {'pattern': '.+'} and in the dataset BridgeBIM_Element",
+          "status": true,
+          "total_applicable": 1470,
+          "total_fail": 0,
+          "failed_entities": []
+        },
+        {
+          "label": "BridgeBIM_Element.Deck",
+          "description": "Deck data shall be {'enumeration': ['左幅', '右幅']} and in the dataset BridgeBIM_Element",
+          "status": true,
+          "total_applicable": 1470,
+          "total_fail": 0,
+          "failed_entities": []
+        },
+        {
+          "label": "Name / Category",
+          "description": "Shall have a material",
+          "status": true,
+          "total_applicable": 1470,
+          "total_fail": 0,
+          "failed_entities": []
+        }
+      ]
+    },
+    {
+      "name": "Precast girder schedule and structural fields",
+      "status": true,
+      "is_ifc_version": true,
+      "total_applicable": 120,
+      "total_applicable_fail": 0,
+      "total_checks": 600,
+      "total_checks_fail": 0,
+      "requirements": [
+        {
+          "label": "BridgeBIM_Element.CastDate",
+          "description": "CastDate data shall be {'pattern': '[0-9]{4}-[0-9]{2}-[0-9]{2}'} and in the dataset BridgeBIM_Element",
+          "status": true,
+          "total_applicable": 120,
+          "total_fail": 0,
+          "failed_entities": []
+        },
+        {
+          "label": "BridgeBIM_Element.ToStorageDate",
+          "description": "ToStorageDate data shall be {'pattern': '[0-9]{4}-[0-9]{2}-[0-9]{2}'} and in the dataset BridgeBIM_Element",
+          "status": true,
+          "total_applicable": 120,
+          "total_fail": 0,
+          "failed_entities": []
+        },
+        {
+          "label": "BridgeBIM_Element.ErectDate",
+          "description": "ErectDate data shall be {'pattern': '[0-9]{4}-[0-9]{2}-[0-9]{2}'} and in the dataset BridgeBIM_Element",
+          "status": true,
+          "total_applicable": 120,
+          "total_fail": 0,
+          "failed_entities": []
+        },
+        {
+          "label": "BridgeBIM_Structural.MomentFirstStageMax_kNm",
+          "description": "MomentFirstStageMax_kNm data shall be provided in the dataset BridgeBIM_Structural",
+          "status": true,
+          "total_applicable": 120,
+          "total_fail": 0,
+          "failed_entities": []
+        },
+        {
+          "label": "BridgeBIM_Structural.MomentDeadMax_kNm",
+          "description": "MomentDeadMax_kNm data shall be provided in the dataset BridgeBIM_Structural",
+          "status": true,
+          "total_applicable": 120,
+          "total_fail": 0,
+          "failed_entities": []
+        }
+      ]
+    },
+    {
+      "name": "Formal task identification",
+      "status": true,
+      "is_ifc_version": true,
+      "total_applicable": 354,
+      "total_applicable_fail": 0,
+      "total_checks": 708,
+      "total_checks_fail": 0,
+      "requirements": [
+        {
+          "label": "Name",
+          "description": "The Name shall be {'pattern': '.+'}",
+          "status": true,
+          "total_applicable": 354,
+          "total_fail": 0,
+          "failed_entities": []
+        },
+        {
+          "label": "Identification",
+          "description": "The Identification shall be {'pattern': '.+'}",
+          "status": true,
+          "total_applicable": 354,
+          "total_fail": 0,
+          "failed_entities": []
+        }
+      ]
+    },
+    {
+      "name": "Named formal work schedule",
+      "status": true,
+      "is_ifc_version": true,
+      "total_applicable": 1,
+      "total_applicable_fail": 0,
+      "total_checks": 1,
+      "total_checks_fail": 0,
+      "requirements": [
+        {
+          "label": "Name",
+          "description": "The Name shall be {'pattern': '.+'}",
+          "status": true,
+          "total_applicable": 1,
+          "total_fail": 0,
+          "failed_entities": []
+        }
+      ]
+    }
+  ],
+  "model_sha256": "71900680f552874523e13eb833da72c0d5c871249ab73e4239b7d2bf38c0d670"
+}

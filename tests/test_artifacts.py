@@ -12,6 +12,9 @@ import re
 import subprocess
 import sys
 import unittest
+import copy
+from pathlib import Path
+from unittest.mock import patch
 from collections import Counter
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -26,7 +29,7 @@ import ifcopenshell.util.shape as US           # noqa: E402
 import ifcopenshell.validate                   # noqa: E402
 import rhino3dm                                # noqa: E402
 
-from bridge import alignment as AL, config as C, schedule as S   # noqa: E402
+from bridge import alignment as AL, config as C, schedule as S, construction as CP   # noqa: E402
 from bridge.model import support_name, support_stations           # noqa: E402
 from bridge.numcmp import compare                                 # noqa: E402
 from bridge.pipeline import compute, element_rows                 # noqa: E402
@@ -106,6 +109,32 @@ class Rhino3dm(unittest.TestCase):
             self.assertEqual(lay, "上部结构::预制T梁::%s %.2f m" % (g.attrs["family"], g.attrs["length"]))
 
     def test_geometry_bounding_boxes_match_the_model(self):
+        from scripts.check_replay import verify_units, batch_paths
+        verify_units(M3, M3)
+        wrong_units = rhino3dm.File3dm()
+        wrong_units.Settings.ModelUnitSystem = rhino3dm.UnitSystem.Millimeters
+        for replay, source in ((wrong_units, M3), (M3, wrong_units)):
+            with self.subTest(unit_scale="metres/millimetres"):
+                with self.assertRaisesRegex(AssertionError, "metres"):
+                    verify_units(replay, source)
+        replay_dir = Path(ROOT) / "model/replay"
+        jobs = json.loads((Path(ROOT) / "rhino/verification_jobs.json").read_text(encoding="utf-8"))
+        batch = json.loads((replay_dir / "bridge_batch.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(batch_paths(replay_dir, jobs, batch)), 9)
+        incomplete = copy.deepcopy(batch)
+        incomplete["batch_exports"].pop()
+        with self.assertRaisesRegex(AssertionError, "eight"):
+            batch_paths(replay_dir, jobs, incomplete)
+        original_is_file = Path.is_file
+        missing_paths = (replay_dir / "bridge_2027-02-20_1600_M2_L-U2-G3.3dm",
+                         replay_dir / "qa" / batch["panel_test"]["export_qa_files"]["png"])
+        for missing_path in missing_paths:
+            def missing_artifact(path):
+                return False if path == missing_path else original_is_file(path)
+            with self.subTest(missing_native_artifact=str(missing_path)):
+                with patch.object(Path, "is_file", missing_artifact):
+                    with self.assertRaisesRegex(AssertionError, "missing"):
+                        batch_paths(replay_dir, jobs, batch)
         worst = 0.0
         for eid, [(o, _)] in self.objs.items():
             bb = o.Geometry.GetBoundingBox()
@@ -470,7 +499,7 @@ class Ifc4D(unittest.TestCase):
             self.assertEqual(dur(rel.TimeLag.LagValue.wrappedValue), gap)
             self.assertGreaterEqual(gap, dt.timedelta(0))
             n += 1
-        self.assertEqual(n, 120 + 119 + 2 * len(S.conversions(R["rows"])))
+        self.assertEqual(n, sum(len(t["predecessors"]) for t in CP.build(R["els"], R["rows"])["tasks"]))
 
     def test_precast_tasks_precede_erection(self):
         preds = {}
@@ -482,7 +511,7 @@ class Ifc4D(unittest.TestCase):
             self.assertEqual(t.TaskTime.ScheduleStart[:10], r["cast"])
 
     def test_conversion_tasks_remove_the_temporary_supports(self):
-        c_rows = rows("conversions.csv")
+        complete = CP.build(R["els"], R["rows"])
         removed = Counter()
         for rel in IFC.by_type("IfcRelAssignsToProcess"):
             t = rel.RelatingProcess
@@ -493,7 +522,30 @@ class Ifc4D(unittest.TestCase):
         self.assertEqual(set(removed), {e.eid for e in R["els"] if e.cls == "temp_support"})
         self.assertTrue(all(v == 1 for v in removed.values()))
         convs = [t for n, t in self.tasks.items() if n.startswith("体系转换 ")]
-        self.assertEqual(sorted(t.TaskTime.ScheduleStart[:10] for t in convs), sorted(r["conversion"] for r in c_rows))
+        self.assertEqual(sorted(t.TaskTime.ScheduleFinish for t in convs), sorted(r["conversion"].isoformat() for r in complete["conversions"]))
+
+    def test_complete_tasks_reuse_real_products_and_shared_hourly_plan(self):
+        complete = CP.build(R["els"], R["rows"])
+        tasks = {t.Identification: t for t in IFC.by_type("IfcTask")}
+        outputs, removals = {}, {}
+        for relation in IFC.by_type("IfcRelAssignsToProduct"):
+            for task in relation.RelatedObjects:
+                if task.is_a("IfcTask"):
+                    outputs.setdefault(task.Identification, set()).add(relation.RelatingProduct.Name)
+        for relation in IFC.by_type("IfcRelAssignsToProcess"):
+            removals[relation.RelatingProcess.Identification] = {o.Name for o in relation.RelatedObjects}
+        for item in complete["tasks"]:
+            actual = tasks[item["id"]]
+            self.assertEqual(actual.TaskTime.ScheduleStart, item["start"].isoformat())
+            self.assertEqual(actual.TaskTime.ScheduleFinish, item["finish"].isoformat())
+            self.assertEqual(outputs.get(item["id"], set()), set(item["elements"]))
+            self.assertEqual(removals.get(item["id"], set()), set(item["removes"]))
+            props = UE.get_psets(actual)["BridgeBIM_ConstructionTask"]
+            self.assertEqual(props["ExampleAssumption"], item["example_assumption"])
+            self.assertEqual(props["CureHours"], item["cure_hours"])
+            self.assertEqual(props["ConstructionClass"], item["class"])
+        ws = IFC.by_type("IfcWorkSchedule")[0]
+        self.assertEqual(ws.FinishTime, complete["finish"].isoformat())
 
 
 class IfcStructural(unittest.TestCase):

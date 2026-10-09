@@ -1,0 +1,212 @@
+<?xml version='1.0' encoding='utf-8'?>
+<ids xmlns="http://standards.buildingsmart.org/IDS" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://standards.buildingsmart.org/IDS http://standards.buildingsmart.org/IDS/1.0/ids.xsd">
+    <info>
+        <title>Bridge BIM IFC delivery requirements</title>
+        <description>Check engineering element identity/category/material and precast schedule fields. Task dependencies, structural cases and geometry are checked separately.</description>
+    </info>
+    <specifications>
+        <specification name="Engineering element classification identity and material" ifcVersion="IFC4X3_ADD2" identifier="B-ELEMENT">
+            <applicability minOccurs="1" maxOccurs="unbounded">
+                <entity>
+                    <name>
+                        <xs:restriction base="xs:string">
+                            <xs:enumeration value="IFCBEAM" />
+                            <xs:enumeration value="IFCBEARING" />
+                            <xs:enumeration value="IFCSLAB" />
+                            <xs:enumeration value="IFCPILE" />
+                            <xs:enumeration value="IFCRAILING" />
+                            <xs:enumeration value="IFCCOLUMN" />
+                            <xs:enumeration value="IFCCOURSE" />
+                            <xs:enumeration value="IFCDISCRETEACCESSORY" />
+                            <xs:enumeration value="IFCWALL" />
+                        </xs:restriction>
+                    </name>
+                </entity>
+            </applicability>
+            <requirements>
+                <attribute cardinality="required">
+                    <name>
+                        <simpleValue>Name</simpleValue>
+                    </name>
+                    <value>
+                        <xs:restriction base="xs:string">
+                            <xs:pattern value=".+" />
+                        </xs:restriction>
+                    </value>
+                </attribute>
+                <property cardinality="required">
+                    <propertySet>
+                        <simpleValue>BridgeBIM_Element</simpleValue>
+                    </propertySet>
+                    <baseName>
+                        <simpleValue>ElementID</simpleValue>
+                    </baseName>
+                    <value>
+                        <xs:restriction base="xs:string">
+                            <xs:pattern value=".+" />
+                        </xs:restriction>
+                    </value>
+                </property>
+                <property cardinality="required">
+                    <propertySet>
+                        <simpleValue>BridgeBIM_Element</simpleValue>
+                    </propertySet>
+                    <baseName>
+                        <simpleValue>Category</simpleValue>
+                    </baseName>
+                    <value>
+                        <xs:restriction base="xs:string">
+                            <xs:pattern value=".+" />
+                        </xs:restriction>
+                    </value>
+                </property>
+                <property cardinality="required">
+                    <propertySet>
+                        <simpleValue>BridgeBIM_Element</simpleValue>
+                    </propertySet>
+                    <baseName>
+                        <simpleValue>Deck</simpleValue>
+                    </baseName>
+                    <value>
+                        <xs:restriction base="xs:string">
+                            <xs:enumeration value="左幅" />
+                            <xs:enumeration value="右幅" />
+                        </xs:restriction>
+                    </value>
+                </property>
+                <material cardinality="required" />
+            </requirements>
+        </specification>
+        <specification name="Precast girder schedule and structural fields" ifcVersion="IFC4X3_ADD2" identifier="B-GIRDER">
+            <applicability minOccurs="1" maxOccurs="unbounded">
+                <entity>
+                    <name>
+                        <simpleValue>IFCBEAM</simpleValue>
+                    </name>
+                </entity>
+                <property>
+                    <propertySet>
+                        <simpleValue>BridgeBIM_Element</simpleValue>
+                    </propertySet>
+                    <baseName>
+                        <simpleValue>ElementID</simpleValue>
+                    </baseName>
+                    <value>
+                        <xs:restriction base="xs:string">
+                            <xs:pattern value="G-.*" />
+                        </xs:restriction>
+                    </value>
+                </property>
+            </applicability>
+            <requirements>
+                <property cardinality="required">
+                    <propertySet>
+                        <simpleValue>BridgeBIM_Element</simpleValue>
+                    </propertySet>
+                    <baseName>
+                        <simpleValue>CastDate</simpleValue>
+                    </baseName>
+                    <value>
+                        <xs:restriction base="xs:string">
+                            <xs:pattern value="[0-9]{4}-[0-9]{2}-[0-9]{2}" />
+                        </xs:restriction>
+                    </value>
+                </property>
+                <property cardinality="required">
+                    <propertySet>
+                        <simpleValue>BridgeBIM_Element</simpleValue>
+                    </propertySet>
+                    <baseName>
+                        <simpleValue>ToStorageDate</simpleValue>
+                    </baseName>
+                    <value>
+                        <xs:restriction base="xs:string">
+                            <xs:pattern value="[0-9]{4}-[0-9]{2}-[0-9]{2}" />
+                        </xs:restriction>
+                    </value>
+                </property>
+                <property cardinality="required">
+                    <propertySet>
+                        <simpleValue>BridgeBIM_Element</simpleValue>
+                    </propertySet>
+                    <baseName>
+                        <simpleValue>ErectDate</simpleValue>
+                    </baseName>
+                    <value>
+                        <xs:restriction base="xs:string">
+                            <xs:pattern value="[0-9]{4}-[0-9]{2}-[0-9]{2}" />
+                        </xs:restriction>
+                    </value>
+                </property>
+                <property cardinality="required">
+                    <propertySet>
+                        <simpleValue>BridgeBIM_Structural</simpleValue>
+                    </propertySet>
+                    <baseName>
+                        <simpleValue>MomentFirstStageMax_kNm</simpleValue>
+                    </baseName>
+                </property>
+                <property cardinality="required">
+                    <propertySet>
+                        <simpleValue>BridgeBIM_Structural</simpleValue>
+                    </propertySet>
+                    <baseName>
+                        <simpleValue>MomentDeadMax_kNm</simpleValue>
+                    </baseName>
+                </property>
+            </requirements>
+        </specification>
+        <specification name="Formal task identification" ifcVersion="IFC4X3_ADD2" identifier="B-TASK">
+            <applicability minOccurs="1" maxOccurs="unbounded">
+                <entity>
+                    <name>
+                        <simpleValue>IFCTASK</simpleValue>
+                    </name>
+                </entity>
+            </applicability>
+            <requirements>
+                <attribute cardinality="required">
+                    <name>
+                        <simpleValue>Name</simpleValue>
+                    </name>
+                    <value>
+                        <xs:restriction base="xs:string">
+                            <xs:pattern value=".+" />
+                        </xs:restriction>
+                    </value>
+                </attribute>
+                <attribute cardinality="required">
+                    <name>
+                        <simpleValue>Identification</simpleValue>
+                    </name>
+                    <value>
+                        <xs:restriction base="xs:string">
+                            <xs:pattern value=".+" />
+                        </xs:restriction>
+                    </value>
+                </attribute>
+            </requirements>
+        </specification>
+        <specification name="Named formal work schedule" ifcVersion="IFC4X3_ADD2" identifier="B-SCHEDULE">
+            <applicability minOccurs="1" maxOccurs="unbounded">
+                <entity>
+                    <name>
+                        <simpleValue>IFCWORKSCHEDULE</simpleValue>
+                    </name>
+                </entity>
+            </applicability>
+            <requirements>
+                <attribute cardinality="required">
+                    <name>
+                        <simpleValue>Name</simpleValue>
+                    </name>
+                    <value>
+                        <xs:restriction base="xs:string">
+                            <xs:pattern value=".+" />
+                        </xs:restriction>
+                    </value>
+                </attribute>
+            </requirements>
+        </specification>
+    </specifications>
+</ids>

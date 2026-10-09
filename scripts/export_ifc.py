@@ -13,7 +13,8 @@ IFC 结构：
           └─ IfcBridgePart SUBSTRUCTURE → ABUTMENT A00 / A12、PIER P01–P11（IfcLinearPlacement 按桩号定位）
     预制 T 梁：IfcBeam T_BEAM，T 形截面沿梁轴斜向拉伸，两端用 IfcBooleanClippingResult
       按径向支承线切齐；其余构件是 IfcPolygonalFaceSet（与 Rhino 网格同一组顶点）或拉伸体。
-    4D：IfcWorkSchedule 下 120 个预制任务、120 个架梁任务、每幅每联的连续段浇筑与体系转换任务；
+    4D：IfcWorkSchedule 使用 bridge.construction 完整示例计划，含原120个预制/120个架梁任务，
+      横隔板、湿接缝、翼缘现浇、连续段、转换、铺装、护栏及伸缩装置（后续工效/养护为显式假设）；
       架梁任务产出对应的梁（IfcRelAssignsToProduct），体系转换任务消耗临时支座
       （IfcRelAssignsToProcess，拆除），任务间 IfcRelSequence。
     结构分析（bridge/structure.py 的计算，写成 IFC 结构分析领域的两个 IfcStructuralAnalysisModel）：
@@ -58,7 +59,7 @@ from ifcopenshell import ifcopenshell_wrapper
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from bridge import alignment as AL, config as C, schedule as S                    # noqa: E402
+from bridge import alignment as AL, config as C, schedule as S, construction as CP  # noqa: E402
 from bridge.model import section_area, support_kind, support_name, support_stations, unit_bounds   # noqa: E402
 from bridge.numcmp import compare                                                  # noqa: E402
 from bridge.pipeline import (CLASS_NAMES, COUNT_ITEMS, bearing_design_rows, bearing_force_rows, compute,  # noqa: E402
@@ -701,15 +702,16 @@ def build_structural(f, r, products, bridge, ctx):
 
 
 def build_schedule(f, r, products):
-    """任务的开始 / 结束直接取自 bridge.schedule 的排程。任务间关系另写 IfcRelSequence（完成—开始），
+    """任务的开始 / 结束直接取自 bridge.construction（保留 schedule 预制/架梁基线）。任务间关系另写 IfcRelSequence（完成—开始），
     时差按两端实际时刻算出——不用 API 的 assign_sequence：它会按前置任务「连锁」改写后续任务的日期，
     把架梁提前到预制完成的当天。"""
     sq = ifcopenshell.api.sequence
     wp = sq.add_work_plan(f, name="施工计划（工效为假设值）", predefined_type="PLANNED")
     ws = sq.add_work_schedule(f, name="梁场预制与架梁 4D 计划", predefined_type="PLANNED", work_plan=wp)
-    convs = S.conversions(r["rows"])
-    first = _at(min(row["cast"] for row in r["rows"]), 0)
-    last = _at(max(m["conversion"] for m in convs), C.DAY_HOURS)
+    complete = CP.build(r["els"], r["rows"])
+    ws.Name = "完整示例施工计划（原架梁基线 + 可配置后续工序）"
+    wp.Description = ws.Description = CP.NOTICE
+    first, last = complete["start"], complete["finish"]
     for w in (wp, ws):                     # API 默认填当前时刻，固定下来才能逐字节复现
         w.CreationDate, w.StartTime, w.FinishTime = TIMESTAMP, _iso(first), _iso(last)
     span = {}
@@ -733,46 +735,36 @@ def build_schedule(f, r, products):
     root_yard = task("梁场预制", "Y")
     root_erect = task("架梁", "E")
     root_conv = task("墩顶连续与体系转换", "C")
+    root_follow = task("后续工序（演示工效与养护）", "F")
     groups = {}
     for d, _ in C.DECKS:
         for u in range(1, len(C.UNITS) + 1):
             groups[(d, u)] = task("架设 %s第%d联" % (DECK_NAMES[d], u), "E-%s%d" % (d, u), root_erect)
-    prev = None
-    unit_last = {}
-    for row in r["rows"]:
-        g = row["girder"]
-        e_unit = r["by_id"][g].attrs["unit"]
-        tp = task("预制 " + g, "Y%03d" % row["order"], root_yard, "CONSTRUCTION", _at(row["cast"], 0),
-                  _at(row["to_storage"], 0))
-        t0 = _at(row["erect"], row["erect_hour"])
-        te = task("架设 " + g, "E%03d" % row["order"], groups[(row["deck"], e_unit)], "INSTALLATION", t0,
-                  t0 + datetime.timedelta(hours=C.ERECT_HOURS))
-        sq.assign_product(f, relating_product=products[g], related_object=te)
-        after(tp, te)
-        if prev is not None:
-            after(prev, te)
-        prev = te
-        unit_last[(row["deck"], e_unit)] = te
-    for m in convs:
-        key = (m["deck"], m["unit"])
-        label = "%s第%d联" % (DECK_NAMES[m["deck"]], m["unit"])
-        tc = task("浇筑墩顶连续段 " + label, "C-%s%d-1" % key, root_conv, "CONSTRUCTION", _at(m["cast"], 0),
-                  _at(m["cast"], C.DAY_HOURS))
-        tk = task("体系转换 " + label, "C-%s%d-2" % key, root_conv, "USERDEFINED", _at(m["conversion"], 0),
-                  _at(m["conversion"], C.DAY_HOURS))
-        tk.ObjectType = "张拉负弯矩钢束、拆除临时支座"
-        after(unit_last[key], tc)
-        after(tc, tk)
-        piers = [int(p[1:]) for p in m["piers"]]
-        for e in r["els"]:
-            if e.deck != m["deck"] or e.attrs.get("support") not in piers:
-                continue
-            if e.cls == "continuity":
-                sq.assign_product(f, relating_product=products[e.eid], related_object=tc)
-            elif e.cls == "temp_support":
-                sq.assign_process(f, relating_process=tk, related_object=products[e.eid])
+    actual = {}
+    for item in complete["tasks"]:
+        cls = item["class"]
+        parent = (root_yard if cls == "precast" else groups[(item["deck"], item["unit"])] if cls == "girder"
+                  else root_conv if cls in ("continuity", "conversion") else root_follow)
+        ptype = "USERDEFINED" if cls == "conversion" else "INSTALLATION" if cls in ("girder", "expansion_joint") else "CONSTRUCTION"
+        t = task(item["name"], item["id"], parent, ptype, item["start"], item["finish"])
+        actual[item["id"]] = t
+        if cls == "conversion":
+            t.ObjectType = "张拉负弯矩钢束、拆除临时支座"
+        t.Description = CP.NOTICE if item["example_assumption"] else "原预制/架梁基线"
+        ps = ifcopenshell.api.pset.add_pset(f, product=t, name="BridgeBIM_ConstructionTask")
+        ifcopenshell.api.pset.edit_pset(f, pset=ps, properties={
+            "ConstructionClass": cls, "ExampleAssumption": item["example_assumption"],
+            "WorkHours": item["work_hours"], "CureHours": item["cure_hours"],
+            "WorkFinish": _iso(item["work_finish"]), "Source": "bridge.construction"})
+        for eid in item["elements"]:
+            sq.assign_product(f, relating_product=products[eid], related_object=t)
+        for eid in item["removes"]:
+            sq.assign_process(f, relating_process=t, related_object=products[eid])
+    for item in complete["tasks"]:
+        for predecessor in item["predecessors"]:
+            after(actual[predecessor], actual[item["id"]])
     # 汇总任务的起止 = 子任务的最早开始、最晚结束
-    for parent in [root_yard, root_erect, root_conv] + list(groups.values()):
+    for parent in [root_yard, root_erect, root_conv, root_follow] + list(groups.values()):
         kids = []
         stack = [parent]
         while stack:

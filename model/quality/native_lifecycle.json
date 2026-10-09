@@ -1,0 +1,13 @@
+{
+  "ok": true,
+  "source_sha256": "f126f892627589b9de3d764e2f0172a15de0d33d616ed6e6d35ca355a288747d",
+  "old_document_serial": 268435461,
+  "old_document_closed": true,
+  "timer_stopped": true,
+  "sticky_removed": true,
+  "old_save_query_tick_blocked": true,
+  "old_accessor_rejected": true,
+  "new_document_panel_available": true,
+  "new_document_serial": 268435462,
+  "source_preserved": true
+}
