@@ -26,7 +26,7 @@ def control(kind, **properties):
 class Timeline(EF.Form):
     def __init__(self, doc, result, initial, apply, show_stage, export, query):
         super().__init__()
-        self.Title = "桥梁 BIM · 完整示例施工时间轴 / 既有阶段结果"
+        self.Title = "桥梁 BIM · 施工预测与放行门禁 / 既有整联结果"
         self.ClientSize = ED.Size(650, 680)
         self.Padding = ED.Padding(12)
         self.doc, self.result = doc, result
@@ -34,9 +34,8 @@ class Timeline(EF.Form):
         self.apply_callback, self.stage_callback = apply, show_stage
         self.export_callback, self.query_callback = export, query
         self.current = R.parse_moment(initial)
-        self.start = CP.at(min(row["cast"] for row in result["rows"]))
-        self.finish = result["construction"]["finish"]
-        self.events = sorted({t[k] for t in result["construction"]["tasks"] for k in ("start", "work_finish", "finish")})
+        self.start, self.finish = R.timeline_bounds(result["construction"])
+        self.events = R.event_times(result["rows"], result["els"], result["construction"])
         self.updating = False
         self.syncing_widgets = False
         self.pending = None
@@ -137,6 +136,7 @@ class Timeline(EF.Form):
                     self.current.isoformat(" "), c["girders_erected"], c["girders_total"], c["girders_installing"],
                     c["units_converted"], c["units_total"], c["temporary_supports_active"], c["follow_on_completed"],
                     c["follow_on_total"], c["tasks_completed"], c["tasks_total"], self.finish.isoformat(" "))
+                self.status.Text += "\n%s；门禁待放行 %d；施工状态为计划预测，非实测进度" % (self.state["mode"], c["tasks_held"])
                 self.lookup(None, None)
                 if self.pending is None:
                     break

@@ -362,8 +362,8 @@ def _yard_girder(u_mid, v_mid, z, length):
     return brep
 
 
-def yard_pad_z():
-    b = Y.boundary()
+def yard_pad_z(configuration=None):
+    b = Y.boundary(configuration)
     zs = []
     for uu in (b[0], (b[0] + b[2]) / 2, b[2]):
         for vv in (b[1], (b[1] + b[3]) / 2, b[3]):
@@ -375,47 +375,49 @@ def yard_pad_z():
 
 def draw_yard(r):
     L = "梁场::"
-    z, z_low = yard_pad_z()
-    b = Y.boundary()
+    configuration = r["construction_config"]
+    bed_layout, storage_layout = Y.beds(configuration=configuration), Y.storage(configuration)
+    z, z_low = yard_pad_z(configuration)
+    b = Y.boundary(configuration)
     DOC.Objects.AddBrep(_ybox(b, z_low, z), attrs(L + "场坪", (216, 212, 200)))
-    for i, bed in enumerate(Y.beds(), 1):
+    for i, bed in enumerate(bed_layout, 1):
         DOC.Objects.AddBrep(_ybox(bed, z, z + 0.4), attrs(L + "制梁台座", (96, 132, 182), name="台座 %d" % i))
-    for i, slot in enumerate(Y.storage(), 1):
+    for i, slot in enumerate(storage_layout, 1):
         u0, v0, u1, v1 = slot
         for vv in (v0 + 1.0, v1 - 2.0):
             DOC.Objects.AddBrep(_ybox((u0, vv, u1, vv + 1.0), z, z + 0.5), attrs(L + "存梁台座", (140, 110, 80),
                                                                                  name="存梁位 %d" % i))
     DOC.Objects.AddBrep(_ybox(Y.rebar_area(), z, z + 0.05), attrs(L + "钢筋加工区", (230, 196, 110)))
-    for (p0, p1) in Y.rails():
+    for (p0, p1) in Y.rails(configuration):
         DOC.Objects.AddBrep(_ybox((p0[0], p0[1] - 0.3, p1[0], p1[1] + 0.3), z, z + 0.2), attrs(L + "龙门吊轨道", (70, 70, 70)))
-    for uu in (Y.beds()[5][0] - 1.0, Y.storage()[8][0] - 1.0):
+    for uu in (bed_layout[min(5,len(bed_layout)-1)][0] - 1.0, storage_layout[8][0] - 1.0):
         for vv in (-3.0, C.BED_L + 3.0):
             DOC.Objects.AddBrep(_ybox((uu, vv - 0.4, uu + 0.8, vv + 0.4), z, z + 11.0), attrs(L + "龙门吊", (245, 190, 20)))
         DOC.Objects.AddBrep(_ybox((uu, -3.5, uu + 0.8, C.BED_L + 3.5), z + 10.2, z + 11.2), attrs(L + "龙门吊", (245, 190, 20)))
-    route = [(x, y, z + 0.3) for x, y in Y.haul_route()]
+    route = [(x, y, z + 0.3) for x, y in Y.haul_route(configuration)]
     route[-1] = (route[-1][0], route[-1][1], AL.deck_top(C.BRIDGE_START, dict(C.DECKS)["R"], "R"))
     polyline(route, L + "运梁便道", (210, 40, 30), 0.5)
     day = r["summary"]["storage_peak_day"]
     beds, stored = S.yard_state(r["rows"], day)
     lengths = {e.eid: e.attrs["length"] for e in r["els"] if e.cls == "girder"}
     for bed_no, g in beds:
-        u0, v0, u1, v1 = Y.beds()[bed_no - 1]
+        u0, v0, u1, v1 = bed_layout[bed_no - 1]
         DOC.Objects.AddBrep(_yard_girder((u0 + u1) / 2, (v0 + v1) / 2, z + 0.4, lengths[g]),
                             attrs(L + "在制梁", (150, 190, 230), name=g))
     for slot, lyr, g in stored:
-        u0, v0, u1, v1 = Y.storage()[slot]
+        u0, v0, u1, v1 = storage_layout[slot]
         DOC.Objects.AddBrep(_yard_girder((u0 + u1) / 2, (v0 + v1) / 2, z + 0.5 + lyr * (C.H_GIRDER + 0.3), lengths[g]),
                             attrs(L + "存梁", (214, 210, 200), name=g))
     ux = (b[0] + b[2]) / 2
-    dot("制梁台座 %d 个（蓝）" % C.N_BEDS, (Y.to_world((Y.beds()[0][0] + Y.beds()[-1][2]) / 2, -8.0) + (z + 1,)),
+    dot("制梁台座 %d 个（蓝）" % len(bed_layout), (Y.to_world((bed_layout[0][0] + bed_layout[-1][2]) / 2, -8.0) + (z + 1,)),
         L + "文字", 16)
     dot("存梁 %d 位 × %d 层" % (C.STORAGE_POSITIONS, C.STORAGE_LAYERS),
-        (Y.to_world((Y.storage()[0][0] + Y.storage()[-1][2]) / 2, -8.0) + (z + 1,)), L + "文字", 16)
+        (Y.to_world((storage_layout[0][0] + storage_layout[-1][2]) / 2, -8.0) + (z + 1,)), L + "文字", 16)
     dot("钢筋加工区", (Y.to_world((Y.rebar_area()[0] + Y.rebar_area()[2]) / 2, 16.0) + (z + 1,)), L + "文字", 15)
-    dot("运梁便道 %.0f m → 0 号桥台" % Y.haul_length(), route[1], L + "文字", 15)
+    dot("运梁便道 %.0f m → 0 号桥台" % Y.haul_length(configuration), route[1], L + "文字", 15)
     dot("%s（存梁峰值日）：台座上 %d 片、存梁区 %d 片" % (day.isoformat(), len(beds), len(stored)),
         (Y.to_world(ux, C.BED_L + 16.0) + (z + 1,)), L + "文字", 17)
-    step("梁场：%d 台座、%d 存梁位；%s 快照 台座 %d 片 / 存梁 %d 片" % (len(Y.beds()), len(Y.storage()),
+    step("梁场：%d 台座、%d 存梁位；%s 快照 台座 %d 片 / 存梁 %d 片" % (len(bed_layout), len(storage_layout),
                                                                 day.isoformat(), len(beds), len(stored)))
     return day, len(beds), len(stored)
 
@@ -1091,9 +1093,9 @@ def shoot(img_dir, r, yard_info, struct_info):
     # 4 梁场（存梁峰值日）
     only("梁场", "地形", "路线::中线（设计高程）", "上部结构", "下部结构")
     vp.DisplayMode = rendered
-    bd = Y.boundary()
+    bd = Y.boundary(r["construction_config"])
     (ox, oy), u, v = Y.frame()
-    zc = yard_pad_z()[0]
+    zc = yard_pad_z(r["construction_config"])[0]
     ctr = Y.to_world((bd[0] + bd[2]) / 2 + 25, (bd[1] + bd[3]) / 2 - 5)
     cam = Y.to_world(bd[0] - 55, bd[3] + 95)
     persp((ctr[0], ctr[1], zc), (cam[0], cam[1], zc + 95), 35)

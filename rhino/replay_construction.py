@@ -23,7 +23,7 @@ import System.Drawing.Imaging                         # noqa: E402,F401
 import rhinoscriptsyntax as rs                        # noqa: E402
 import scriptcontext as sc                            # noqa: E402
 
-from bridge import alignment as AL, config as C, replay as R, construction as CP, stage_results as SR  # noqa: E402
+from bridge import alignment as AL, config as C, replay as R, construction as CP, construction_input as CI, stage_results as SR  # noqa: E402
 from bridge.model import frame                        # noqa: E402
 from bridge.pipeline import compute                   # noqa: E402
 from rhino import stage_viewer, timeline_panel          # noqa: E402
@@ -31,7 +31,7 @@ from rhino import stage_viewer, timeline_panel          # noqa: E402
 PALETTE = {"erected": (70, 135, 205), "curing": (236, 165, 55),
            "continuous": (55, 155, 105), "active": (224, 116, 50),
            "static_reference": (160, 166, 170), "installing": (230, 120, 35),
-           "constructing": (230, 120, 35), "completed": (55, 155, 105)}
+           "constructing": (230, 120, 35), "completed": (55, 155, 105), "held": (210, 55, 70)}
 OUT_DIR = os.environ.get("BRIDGE_REPLAY_OUT") or os.path.join(ROOT, "model", "replay")
 LOG = {"ok": False, "steps": []}
 
@@ -78,10 +78,11 @@ def validate_document(doc, result):
     expected = set(result["by_id"])
     if set(ids) != expected:
         raise RuntimeError("文档构件与当前配置不一致；请先重新生成完整模型。")
-    for row in result["rows"]:
-        obj = doc.Objects.FindId(ids[row["girder"]])
-        if obj.Attributes.GetUserString("erect") != row["erect"].isoformat():
-            raise RuntimeError("模型中的架梁日期与当前排程不一致：" + row["girder"])
+    # Canonical cast/erect UserText is the preserved source baseline. A custom
+    # calendar changes construction_* attributes, never geometry or identity.
+    for eid, element in result["by_id"].items():
+        if doc.Objects.FindId(ids[eid]).Attributes.GetUserString("class") != element.cls:
+            raise RuntimeError("源模型类别与当前几何模型不一致：" + eid)
     return ids
 
 
@@ -114,6 +115,14 @@ def apply_snapshot(doc, ids, result, day):
             attrs.SetUserString("construction_start", task["start"].isoformat())
             attrs.SetUserString("construction_finish", task["finish"].isoformat())
             attrs.SetUserString("construction_example_assumption", str(task["example_assumption"]).lower())
+            attrs.SetUserString("construction_mode", state["mode"])
+            attrs.SetUserString("construction_config_sha256", state["configuration_sha256"])
+            attrs.SetUserString("construction_crew", task["crew_id"])
+            attrs.SetUserString("construction_effective_crew", task["effective_crew_id"])
+            attrs.SetUserString("construction_effective_start", task["effective_start"].isoformat() if task["effective_start"] else "HELD")
+            attrs.SetUserString("construction_release_at", task["release_at"].isoformat() if task["release_at"] else "HELD")
+            attrs.SetUserString("construction_hold_reasons", json.dumps(task["hold_reasons"], ensure_ascii=False))
+            attrs.SetUserString("construction_release_gates", json.dumps(task["gates"], ensure_ascii=False, sort_keys=True))
         if item["visible"]:
             attrs.ColorSource = Rhino.DocObjects.ObjectColorSource.ColorFromObject
             attrs.ObjectColor = SD.Color.FromArgb(*PALETTE[item["phase"]])
@@ -125,6 +134,10 @@ def apply_snapshot(doc, ids, result, day):
     doc.Strings.SetString("施工回放时间语义", state["time_semantics"])
     doc.Strings.SetString("施工回放范围", "完整示例计划：梁架设、横隔板、湿缝、翼缘、连续段、转换、铺装、护栏、伸缩装置")
     doc.Strings.SetString("施工回放限制", "\n".join(R.LIMITATIONS))
+    doc.Strings.SetString("施工配置", json.dumps(state["construction_config"], ensure_ascii=False, sort_keys=True))
+    doc.Strings.SetString("施工模式", state["mode"])
+    doc.Strings.SetString("门禁待放行任务", str(state["counts"]["tasks_held"]))
+    doc.Strings.SetString("源排程说明", "原 cast/erect 属性与梁场峰值几何为源基线；配置计划见 construction_* 和施工配置，非实测进度")
     doc.Views.Redraw()
     counts = state["counts"]
     Rhino.RhinoApp.WriteLine("%s：已架 %d/%d，转换 %d/%d 联，临时支座 %d；在制/存梁 %d/%d" % (
@@ -223,7 +236,7 @@ def capture(view, path, state):
             body_font, brush, 24.0, 60.0)
         graphics.DrawString("后续完成 %d/%d；橙：施工/养护  绿：已完成  灰：静态下部结构" % (
             counts["follow_on_completed"], counts["follow_on_total"]), body_font, brush, 24.0, 92.0)
-        graphics.DrawString("新增工效/养护为演示假设；" + (stage["meaning"] if stage else "日期控制构件状态；原力学结果不随日期重算。"), body_font, brush, 24.0, 122.0)
+        graphics.DrawString("%s / 门禁待放行 %d；非实测进度；" % (state["mode"], counts["tasks_held"]) + (stage["meaning"] if stage else "原整联力学结果不随日期重算。"), body_font, brush, 24.0, 122.0)
         if stage:
             graphics.DrawString("支承及有符号反力（kN） · P=永久，T=临时；三维短标号对应下表，箭头长度仅示意，精确值见表", table_font, brush, 24.0, 162.0)
             for index, item in enumerate(stage["supports"]):
@@ -287,10 +300,51 @@ def export_snapshot(doc, view, state, output_dir=None):
     return info
 
 
+def verify_project_gates(doc, ids, view, result):
+    """Native evidence from deliberately synthetic project acceptance fixtures."""
+    from copy import deepcopy
+    config = deepcopy(result["construction_config"])
+    config["mode"], config["releases"] = "project", []
+    config["source"] = {"id":"native-project-gate-fixture", "reference":"native QA fixture, not project/site evidence", "author":"bridge-bim QA"}
+    blocked = compute(configuration=config)
+    missing = apply_snapshot(doc, ids, blocked, "2028-07-01T10:00")
+    assert missing["counts"]["units_converted"] == 0 and missing["counts"]["girders_erected"] == 0
+    assert missing["counts"]["tasks_held"] > 0
+    obj = doc.Objects.FindId(ids["G-L01-1"])
+    assert obj.Attributes.GetUserString("construction_release_at") == "HELD"
+    assert "missing approval" in obj.Attributes.GetUserString("construction_hold_reasons")
+    folder = os.path.join(ROOT, "model", "project_replay")
+    prepare_render_meshes(doc, ids, missing)
+    missing_info = export_snapshot(doc, view, missing, folder)
+    config["releases"] = [{"task_id":"E001", "gate":gate, "approved_at":"2027-07-01T08:00",
+                           "reference":"NATIVE-QA-FIXTURE-001 (not site acceptance)", "source":"native test fixture"} for gate in CI.GATES["girder"]]
+    config["releases"].append({"task_id":"Y001","gate":"fabrication_acceptance","approved_at":"2027-07-01T08:00","reference":"NATIVE-YARD-QA-FIXTURE-001 (not site acceptance)","source":"native test fixture"})
+    approved = compute(configuration=config)
+    before = apply_snapshot(doc, ids, approved, "2027-07-01T07:59")
+    assert before["counts"]["girders_erected"] == 0 and not before["elements"]["G-L01-1"]["visible"]
+    during = apply_snapshot(doc, ids, approved, "2027-07-01T08:00")
+    assert during["counts"]["girders_installing"] == 1
+    assert not doc.Objects.FindId(ids["G-L01-1"]).IsHidden
+    after = apply_snapshot(doc, ids, approved, "2027-07-01T10:00")
+    assert after["counts"]["girders_erected"] == 1 and after["counts"]["units_converted"] == 0
+    assert after["counts"]["temporary_supports_active"] > 0
+    assert doc.Objects.FindId(ids["G-L01-1"]).Attributes.GetUserString("construction_release_at") == "2027-07-01T10:00:00"
+    prepare_render_meshes(doc, ids, after)
+    approved_info = export_snapshot(doc, view, after, folder)
+    report = {"ok":True, "fixture_notice":"Synthetic QA approvals only; never field/project acceptance",
+              "rhino":str(Rhino.RhinoApp.Version), "missing_approval_held":True,
+              "before_approval_hidden":True, "at_approval_installing":True,
+              "after_work_erected":True, "downstream_conversion_blocked":True,
+              "temporary_supports_retained":True,
+              "missing":missing_info["files"], "approved":approved_info["files"]}
+    with open(os.path.join(folder,"native_gates.json"),"w",encoding="utf-8",newline="\n") as handle:
+        json.dump(report,handle,ensure_ascii=False,indent=2); handle.write("\n")
+    return report
+
+
 def main():
     started = time.time()
     result = compute()
-    result["construction"] = CP.build(result["els"], result["rows"])
     with open(os.path.join(ROOT, "data", "stage_results.json"), encoding="utf-8") as handle:
         result["stage_data"] = json.load(handle)
     doc = load_document(set(result["by_id"]))
@@ -340,6 +394,12 @@ def main():
             lines.extend([task["name"], "开始 " + task["start"].isoformat(" "),
                           "施工结束 " + task["work_finish"].isoformat(" "), "养护/任务结束 " + task["finish"].isoformat(" "),
                           "演示假设：" + str(task["example_assumption"])])
+            lines.extend(["模式 " + state["mode"] + " / 计划班组 " + task["crew_id"] + " / 有效班组 " + task["effective_crew_id"],
+                          "最早允许开始 " + (str(task["effective_start"]) if task["effective_start"] else "HELD"),
+                          "最早允许放行 " + (str(task["release_at"]) if task["release_at"] else "HELD"),
+                          "待放行原因 " + "; ".join(task["hold_reasons"]),
+                          "放行依据 " + json.dumps(task["gates"], ensure_ascii=False, sort_keys=True),
+                          "输入来源 " + json.dumps(task["source"], ensure_ascii=False, sort_keys=True)])
         for solved in result["stage_data"]["lines"]:
             support = next((s for s in solved["supports"] if s["eid"] == eid), None)
             if support:
@@ -361,7 +421,7 @@ def main():
             try:
                 # Test the actual Eto UI timer with the native message pump;
                 # do not substitute a direct call to its event handler.
-                initial = min(max(R.parse_moment(supplied), CP.at(max(row["erect"] for row in result["rows"]))),
+                initial = min(max(R.parse_moment(supplied), result["construction"]["by_id"]["E120"]["start"]),
                               result["construction"]["finish"] - timedelta(days=1))
                 panel.update(initial)
                 panel.toggle(None, None)
@@ -460,6 +520,12 @@ def main():
             exports.append({"datetime": info["datetime"], "counts": info["counts"], "files": info["files"]})
         if len(exports) > 1:
             LOG["batch_exports"] = exports
+        if os.environ.get("BRIDGE_PANEL_TEST"):
+            show_stage(None, "L-U2-G3")
+            LOG["project_gates"] = verify_project_gates(doc, ids, view, result)
+            # Restore the final formal simulation/project state after fixture QA.
+            show_stage(jobs[-1].get("stage"),jobs[-1].get("line","L-U2-G3"))
+            apply(jobs[-1]["date"])
         if os.environ.get("BRIDGE_SPATIAL_QA"):
             doc.Modified = False
             from rhino import check_clearance
@@ -474,11 +540,14 @@ def main():
             LOG["spatial_quality"] = {"ok": quality["ok"], "seconds": quality["seconds"], "report": "model/quality/native_spatial.json"}
             if not quality["ok"]:
                 raise RuntimeError("原生三维质量检查未通过，请查看 model/quality/native_spatial.json")
+        if os.environ.get("BRIDGE_PANEL_TEST"):
+            from rhino import verify_lifecycle
+            LOG["document_lifecycle"] = verify_lifecycle.main()
         LOG["seconds"] = round(time.time() - started, 1)
         if Rhino.RhinoDoc.ActiveDoc:
             Rhino.RhinoDoc.ActiveDoc.Modified = False
         return
-    day = doc.Strings.GetValue("施工回放时刻") or C.ERECT_START
+    day = doc.Strings.GetValue("施工回放时刻") or result["construction_config"]["baseline"]["erect_start"]
     for message in R.LIMITATIONS:
         Rhino.RhinoApp.WriteLine(message)
     timeline_panel.show(doc, result, day, apply, show_stage, save, query)

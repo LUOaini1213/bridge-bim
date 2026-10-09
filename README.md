@@ -33,7 +33,7 @@ byte-reproducible. CI re-derives every number in this README from the committed 
   另用 G-M 法算一遍取大值
 - 检查：模型 17 条 + 梁场与架梁 5 条 + 上部结构 10 条，**32/32** 通过；每条都有一个故意弄坏的反例，证明它会变红
 - 4D 原基线：梁场 **16** 个台座提前 **21** 天开工，架桥机 **50** 天架完 120 片、**0** 天等梁；存梁峰值 **34** 片（容量 **40**）；**2027-02-02** 完成全部体系转换。新增完整示例计划含后续工序，默认转换与收尾日期见下文
-- IFC 4.3：**106,181** 个实体，schema 校验 **0** 个问题；几何引擎逐件算出实体，体积与位置和模型一致到 1e-6
+- IFC 4.3：**110,309** 个实体，schema 校验 **0** 个问题；几何引擎逐件算出实体，体积与位置和模型一致到 1e-6
 - 下文每个数字都由 `scripts/check_readme.py` 对着已提交的产物回算，CI 每次提交都跑
 
 路线、地形、桥梁都是虚构的示例；尺寸、工效、设备能力这些不是物理常数的参数集中在
@@ -433,16 +433,67 @@ BridgeBIM_Structural 里带着内力设计值、挠度、反力与压应力，�
 关闭面板会停止计时器；再次运行只保留一个面板。
 
 [`bridge/construction.py`](bridge/construction.py) 是 IFC、Rhino、CSV/JSON 共用的完整示例计划。
-原预制、架梁时刻保持不变；横隔板 → 湿接缝 → 翼缘现浇（每跨）→ 连续段/养护 → 体系转换（每联）
+默认输入保留原预制、架梁时刻；横隔板 → 湿接缝 → 翼缘现浇（每跨）→ 连续段/养护 → 体系转换（每联）
 → 铺装/养护 → 护栏/养护 → 伸缩装置（相邻两联完成后）有明确完成—开始依赖。
-班组目前固定为同幅同工种一组，不支持通过参数改变班组数量；施工按原每日工作时段计，养护按连续时间计，施工班组可在养护期间转到下一跨。
+正式输入是 [`construction/input.json`](construction/input.json)，读取和严格校验入口为 [`bridge/construction_input.py`](bridge/construction_input.py)。
+`durations` 配置各工种的有效施工小时和连续养护小时；`crews.L/R` 配置每幅每工种的实际班组池，默认均为一组。
+班组池覆盖 JSON 中八类后续工种；预制按台座资源排，架设仍使用原单台架桥机顺序，增加班组不会增加架桥机台数。
+每个任务记录 `crew_id`，班组在施工结束释放，可在养护期间转到下一跨；多班组确实并行，同一班组不重叠。
+`calendar` 的 `weekdays` 为周一 0 至周日 6，`rest_dates` 为停工日，`work_dates` 为例外工作日，两列表不允许重叠。
+`start_hour` 与 `day_hours` 定义每日班次；开浇、张拉移梁、架设、过孔、后续工序均遵守日历，养护与换幅转场间隔按连续时间计。
+台座释放后才允许同台座重用，架设保留不可拆分的过孔作业及换幅转场时间。
 默认横隔板、湿接缝、翼缘每跨各施工 4 h、养护 48 h；铺装、护栏每联各施工 20 h、养护 72 h；
-伸缩装置每个施工 4 h，转换作业 2 h（`CONVERSION_WORK_HOURS`）；连续段沿用原每日工时与 7 天养护。
-后续配置在 `construction.ASSUMPTIONS`，`build(..., assumptions={...})` 可覆盖。
+伸缩装置每个施工 4 h，转换作业 2 h；连续段施工 10 h、养护 168 h。
+`baseline` 可覆写预制/架梁起始日、台座数、台座周期、最小龄期、架设/过孔小时、换幅转场日数和连续段浇筑滞后日数。
+施工排程以 JSON 为输入权威；修改 `config.py` 中旧施工常量不会覆写 JSON。几何、荷载与既有整联力学案例仍由 `config.py` 定义。
+Python API `compute(configuration=完整字典或JSON路径)` 同源加载；旧 `build(..., assumptions={...})` 保留局部覆盖兼容。
 **这些工效、班组与养护停留是演示假设，非现场实测，也不代表混凝土强度验收。**
 默认全部体系转换顺延至 **2027-02-09 18:00**，后续收尾至 **2027-02-20 16:00**；
 [`data/construction_tasks.csv`](data/construction_tasks.csv) 和 [`data/construction_plan.json`](data/construction_plan.json)
-列出每项任务与依赖。原基线转换日期保留在 `data/conversions.csv`。
+列出每项任务与依赖。`data/conversions.csv` 与 `summary.conversion_last` 是原算法的转换参考：固定原 1 天滞后、7 天养护，不含新增工序和门禁。
+这组日期及原支座龄期作对照，不能作为当前 JSON 的最终转换日期；`construction_plan.reference_baseline` 保存该来源说明，完整小时级转换以 `construction_plan` 为准。
+
+`mode=simulation` 将所有任务明确标为演示预测，门禁为 **synthetic release**，没有伪造的验收编号或批准时间。
+`mode=project` 不会仅按等待小时放行：预制完成要求 `fabrication_acceptance`；架设还要求 `erection_strength`、`prestress_grout`；混凝土工序完成要求 `concrete_strength`；
+转换还要求 `continuity_strength`、`negative_moment_prestress_grout`、`conversion_authorization`，伸缩装置要求 `installation_acceptance`。
+每条 `releases` 记录必须含 `task_id/gate/approved_at/reference/source`，缺引用、未知任务/门禁、重复记录、带时区时间都拒绝。
+缺批准或前置未放行的任务输出 **HELD** 及原因，批准不能绕过前置依赖。
+`start/work_finish/finish` 是排程预测，`effective_*` 与 `release_at` 是满足输入门禁后的最早允许预测，均不是实测进度。
+迟批会顺延后续工作、过孔及转场，不会在解锁瞬间把下游都算完成；临时支座仅在转换最早允许完成时拆除。
+Rhino 的面板、构件查询、UserText、截图和 IFC 任务 Pset 都显示模式、门禁及来源。IFC 仅写 `Schedule*`，不填造假的 `Actual*` 或 `Completion`。
+`source` 记录输入文件依据、作者与引用，放行记录应来自项目负责人的强度报告、张拉/压浆记录及转换放行记录；软件不验证签署人的资格或替代现场审批。
+
+修改方法：先复制完整 `construction/input.json` 为自己的 JSON，再修改所需键（以下片段是补丁示意，不能替代完整文件）：
+
+```json
+{"crews": {"L": {"diaphragm": 2}},
+ "calendar": {"weekdays": [0,1,2,3,4], "rest_dates": ["2026-12-07"], "work_dates": ["2026-12-06"]},
+ "durations": {"pavement": {"work_hours": 30, "cure_hours": 96}}}
+```
+
+每次重算、IFC 导出、Rhino 回放须用同一输入路径，也可统一设置环境变量 `BRIDGE_CONSTRUCTION_CONFIG`。
+保存快照包含完整规范配置和 SHA256，独立读回按快照的配置重建，不会回到默认 simulation。
+原 `.3dm` 几何和 `cast/erect` 属性作为源基线保留，配置计划另存 `construction_*`，回放中源梁场峰值几何隐藏。
+改变台座布局后要重建完整源模型；仅修改日历、工效、班组或门禁可直接在原源模型回放。
+
+```powershell
+python scripts/build_data.py --construction-config construction/my-plan.json
+python scripts/export_ifc.py --construction-config construction/my-plan.json
+# 仅需更新完整源模型几何（例如台座数变化）时执行下一行：
+python scripts/run_rhino.py --construction-config construction/my-plan.json
+python scripts/run_rhino.py --jobs rhino/verification_jobs.json --verify-panel --spatial-quality --construction-config construction/my-plan.json
+python scripts/build_data.py --check --construction-config construction/my-plan.json
+python scripts/export_ifc.py --check --construction-config construction/my-plan.json
+python scripts/check_ids.py
+python scripts/check_replay.py --all
+python scripts/check_project_gates.py
+python scripts/check_spatial_quality.py
+```
+
+默认输入对应仓库已保存的数值摘要。自定义输入会改变排程和龄期相关结果，随后需更新 README 并运行 `scripts/check_readme.py`，不能沿用默认日期/数量。
+[`tests/test_construction_input.py`](tests/test_construction_input.py) 覆盖真实双班组并行、日历、迟批机器链、未批准/已批准及非法输入；
+[`tests/test_construction_delivery.py`](tests/test_construction_delivery.py) 核对 IFC 回读门禁、稳定 GUID 与空 Actual 字段。
+`--verify-panel` 还生成两份带 **测试专用批准** 的原生 project 快照在 `model/project_replay/`，用于证明批准前不可见、批准后仅首梁架设而转换仍阻断。
 
 面板可选择 30 条梁位线及 **M1（一期恒载）/ Mc（体系转换增量）/ M2（二期恒载增量）/ MG（恒载合计）**。
 紫色弯矩曲线、带符号反力箭头和有效/无效支承标记生成在“施工阶段结果”层；三维用短标号，截图顶部表格列完整ID及数值。
@@ -499,7 +550,7 @@ python scripts/run_rhino.py --jobs rhino/verification_jobs.json --verify-panel
 - **4D**：IfcWorkPlan → IfcWorkSchedule 下 354 个 IfcTask（预制 120、架设 120、连续段浇筑与体系转换各 6，另有后续工序与汇总任务），
   架设任务以 IfcRelAssignsToProduct 产出对应的梁，体系转换任务以 IfcRelAssignsToProcess 消耗（拆除）临时支座；
   461 条 IfcRelSequence 的时差都按两端任务的实际时刻算出。新增工序产出既有真实构件，
-  `BridgeBIM_ConstructionTask` 记录工序类别、演示假设标记、施工工时、养护工时及施工结束时间；
+  `BridgeBIM_ConstructionTask` 记录工序类别、模式/预测标记、施工与养护工时、班组、规范配置 SHA256、输入来源、门禁记录/原因和最早允许预测；
   IFC 与 Rhino 使用同一份完整示例计划，原架设/拆除关联保留。
 - **结构分析**：两个 IfcStructuralAnalysisModel，按施工阶段分开。阶段一「预制梁简支」：360 根 IfcStructuralCurveMember
   （每片梁两端外伸段 + 支座间）、480 个 IfcStructuralPointConnection，其中 240 个带 IfcBoundaryNodeCondition
@@ -527,7 +578,7 @@ python scripts/run_rhino.py --jobs rhino/verification_jobs.json --verify-panel
 | 伸缩装置 | IfcDiscreteAccessory | EXPANSION_JOINT_DEVICE | 8 |
 | 桥台背墙 | IfcWall | RETAININGWALL | 4 |
 
-文件共 **106,181** 个实体，ifcopenshell 的 schema 校验 **0** 个问题。GlobalId 由名称经 uuid5 推出、文件头时间戳固定，
+文件共 **110,309** 个实体，ifcopenshell 的 schema 校验 **0** 个问题。GlobalId 由名称经 uuid5 推出、文件头时间戳固定，
 同一份模型每次导出逐字节相同；在另一台机器上重导时，数学库末位的差别只允许落在浮点数的 1e-9（相对）以内，
 结构、编号、文字必须逐字相同（[`bridge/numcmp.py`](bridge/numcmp.py)）。交给几何引擎（OpenCascade）逐件算成实体后：
 斜拉伸加两次布尔切割的 T 梁与多面体，体积和包围盒都与模型差 < 1e-6；圆柱被引擎离散成多边形，体积差 < 0.5%。
@@ -565,7 +616,7 @@ python -m venv .venv
 python scripts/build_data.py              # 重算 data/（只用标准库）
 python scripts/export_ifc.py              # 写 model/bridge_bim.ifc
 python scripts/run_rhino.py               # 需要本机 Rhino 8：建模、出图、存 .3dm
-python -m unittest tests.test_alignment tests.test_model tests.test_schedule tests.test_structure tests.test_replay tests.test_construction tests.test_stage_results
+python -m unittest tests.test_alignment tests.test_model tests.test_schedule tests.test_structure tests.test_replay tests.test_construction tests.test_construction_input tests.test_stage_results
 python -m pytest tests                    # 全部测试（含与 OpenSees 互核）
 python scripts/check_readme.py            # README 里的数字逐个回算
 python scripts/check_ids.py               # quality/delivery.ids + profile.json 信息交付规则，写 model/quality/IDS 报告
@@ -576,7 +627,7 @@ python scripts/mutation_drill.py          # 变异演练：把求解器改错一
 ```
 
 CI 跑两组：`bridge/` 只用标准库、兼容 Python 3.9（Rhino 8 内置的 CPython 就是 3.9，建模脚本 import 同一份代码），
-先单独跑一遍不装任何依赖的测试；再装 ifcopenshell、rhino3dm 与 openseespy 跑全部 208 个测试、重导 IFC 比对、回算 README。
+先单独跑一遍不装任何依赖的测试；再装 ifcopenshell、rhino3dm 与 openseespy 跑全部 225 个测试、重导 IFC 比对、回算 README。
 OpenSeesPy 只在测试里用，拿来互核自写的求解器（它的许可对研究、教学与内部使用免费）。
 Rhino 那一步在本机跑，它的产物 `model/bridge_bim.3dm` 由 rhino3dm 独立读回来核。
 
