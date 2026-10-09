@@ -1218,6 +1218,9 @@ def main():
     ok = DOC.WriteFile(tmp_out, opt)
     if ok:
         shutil.copyfile(tmp_out, out)
+        from bridge import source_profile
+        source_profile.write(os.path.join(ROOT,"model","source_config.json"),out,r["construction_config"],
+                             "native_model_build",str(Rhino.RhinoApp.Version))
     step("存盘 bridge_bim.3dm：%s（%d 个材质）" % (ok, DOC.Materials.Count))
     LOG.update({"ok": bool(ok), "seconds": round(time.time() - t0, 1), "objects": DOC.Objects.Count,
                 "rhino": str(Rhino.RhinoApp.Version)})

@@ -119,6 +119,9 @@ def apply_snapshot(doc, ids, result, day):
             attrs.SetUserString("construction_config_sha256", state["configuration_sha256"])
             attrs.SetUserString("construction_crew", task["crew_id"])
             attrs.SetUserString("construction_effective_crew", task["effective_crew_id"])
+            attrs.SetUserString("construction_crew_strategy", task["crew_strategy"])
+            attrs.SetUserString("construction_wait_reasons", json.dumps(task["wait_reasons"], ensure_ascii=False))
+            attrs.SetUserString("construction_effective_wait_reasons", json.dumps(task["effective_wait_reasons"], ensure_ascii=False))
             attrs.SetUserString("construction_effective_start", task["effective_start"].isoformat() if task["effective_start"] else "HELD")
             attrs.SetUserString("construction_release_at", task["release_at"].isoformat() if task["release_at"] else "HELD")
             attrs.SetUserString("construction_hold_reasons", json.dumps(task["hold_reasons"], ensure_ascii=False))
@@ -395,8 +398,10 @@ def main():
                           "施工结束 " + task["work_finish"].isoformat(" "), "养护/任务结束 " + task["finish"].isoformat(" "),
                           "演示假设：" + str(task["example_assumption"])])
             lines.extend(["模式 " + state["mode"] + " / 计划班组 " + task["crew_id"] + " / 有效班组 " + task["effective_crew_id"],
-                          "最早允许开始 " + (str(task["effective_start"]) if task["effective_start"] else "HELD"),
-                          "最早允许放行 " + (str(task["release_at"]) if task["release_at"] else "HELD"),
+                          "班组策略 " + task["crew_strategy"],
+                          "可行预测开始 " + (str(task["effective_start"]) if task["effective_start"] else "HELD"),
+                          "可行预测放行 " + (str(task["release_at"]) if task["release_at"] else "HELD"),
+                          "排程等待原因 " + "; ".join(task["effective_wait_reasons"]),
                           "待放行原因 " + "; ".join(task["hold_reasons"]),
                           "放行依据 " + json.dumps(task["gates"], ensure_ascii=False, sort_keys=True),
                           "输入来源 " + json.dumps(task["source"], ensure_ascii=False, sort_keys=True)])

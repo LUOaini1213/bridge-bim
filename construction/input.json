@@ -18,5 +18,6 @@
     "L": {"diaphragm": 1, "wet_joint": 1, "cantilever": 1, "continuity": 1, "conversion": 1, "pavement": 1, "barrier": 1, "expansion_joint": 1},
     "R": {"diaphragm": 1, "wet_joint": 1, "cantilever": 1, "continuity": 1, "conversion": 1, "pavement": 1, "barrier": 1, "expansion_joint": 1}
   },
+  "scheduling": {"crew_strategy": "fixed_route"},
   "releases": []
 }

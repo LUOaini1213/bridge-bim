@@ -7,6 +7,7 @@
     python scripts/check_readme.py
 """
 import ast
+import argparse
 import csv
 import glob
 import json
@@ -15,6 +16,7 @@ import math
 import os
 import re
 import sys
+from pathlib import Path
 from collections import Counter
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -24,41 +26,89 @@ import ifcopenshell            # noqa: E402
 import ifcopenshell.validate   # noqa: E402
 import rhino3dm                # noqa: E402
 
-from bridge import alignment as AL, config as C, model as M   # noqa: E402
+from bridge import alignment as AL, config as C, model as M, construction_input as CI, construction as CP   # noqa: E402
 
-EXPECTED = 216
-README = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+EXPECTED = 217
+README = ""  # Read selected prose/artifacts only after parsing CLI paths.
+DATA_DIR = Path(ROOT) / "data"
 
 
 def rows(name):
-    return list(csv.DictReader(open(os.path.join(ROOT, "data", name), encoding="utf-8")))
+    return list(csv.DictReader(open(DATA_DIR / name, encoding="utf-8")))
 
 
 def src(path):
     return open(os.path.join(ROOT, path), encoding="utf-8").read()
 
 
-SUMMARY = json.load(open(os.path.join(ROOT, "data", "summary.json"), encoding="utf-8"))
-CHECKS = json.load(open(os.path.join(ROOT, "data", "checks.json"), encoding="utf-8"))
-GIRDERS = rows("girders.csv")
-BEARINGS = {r["bearing"]: r for r in rows("bearings.csv")}
-TAKEOFF = {r["class"]: r for r in rows("takeoff.csv")}
-SPECS = rows("length_specs.csv")
-SPEC_SENS = rows("length_spec_sensitivity.csv")
-SENS = {(int(r["beds"]), int(r["lead_days"])): r for r in rows("sensitivity.csv")}
-CONV = rows("conversions.csv")
-ELEMENTS = rows("elements.csv")
-IFC = ifcopenshell.open(os.path.join(ROOT, "model", "bridge_bim.ifc"))
+def load_artifacts(data_dir, ifc_path, readme_path):
+    global DATA_DIR, README, SUMMARY, CHECKS, GIRDERS, BEARINGS, TAKEOFF, SPECS, SPEC_SENS, SENS, CONV, ELEMENTS, IFC
+    global LATERAL, LINES, SECTIONS, REACTIONS, DESIGN, BSENS
+    DATA_DIR, README = Path(data_dir), Path(readme_path).read_text(encoding="utf-8")
+    SUMMARY = json.loads((DATA_DIR / "summary.json").read_text(encoding="utf-8"))
+    CHECKS = json.loads((DATA_DIR / "checks.json").read_text(encoding="utf-8"))
+    GIRDERS = rows("girders.csv")
+    BEARINGS = {r["bearing"]: r for r in rows("bearings.csv")}
+    TAKEOFF = {r["class"]: r for r in rows("takeoff.csv")}
+    SPECS, SPEC_SENS = rows("length_specs.csv"), rows("length_spec_sensitivity.csv")
+    SENS = {(int(r["beds"]), int(r["lead_days"])): r for r in rows("sensitivity.csv")}
+    CONV, ELEMENTS = rows("conversions.csv"), rows("elements.csv")
+    IFC = ifcopenshell.open(str(ifc_path))
+    LATERAL = {int(r["pos"]): r for r in rows("lateral_distribution.csv")}
+    LINES, SECTIONS, REACTIONS = rows("girder_lines.csv"), rows("sections.csv"), rows("bearing_reactions.csv")
+    DESIGN, BSENS = rows("bearing_design.csv"), rows("bearing_sensitivity.csv")
+
+
 T_MODEL, T_ALIGN, T_ART = src("tests/test_model.py"), src("tests/test_alignment.py"), src("tests/test_artifacts.py")
 T_STRUCT, S_STRUCT = src("tests/test_structure.py"), src("bridge/structure.py")
-LATERAL = {int(r["pos"]): r for r in rows("lateral_distribution.csv")}
-LINES = rows("girder_lines.csv")
-SECTIONS = rows("sections.csv")
-REACTIONS = rows("bearing_reactions.csv")
-DESIGN = rows("bearing_design.csv")
-BSENS = rows("bearing_sensitivity.csv")
 
 failures, checked = [], [0]
+
+
+def rows_at(path):
+    with path.open(encoding="utf-8", newline="") as stream:
+        return list(csv.DictReader(stream))
+
+
+def construction_claim_values(configuration):
+    """Numeric prose about configurable work comes from JSON, never old C constants."""
+    cfg = CI.load(configuration)
+    b, cal = cfg["baseline"], cfg["calendar"]
+    return {"beds": b["n_beds"], "productivity": [b["bed_cycle_days"], b["min_age_days"],
+            "%g" % cal["day_hours"], "%g" % b["erect_hours"], "%g" % b["launch_hours"], b["transfer_days"]]}
+
+
+def validate_profile(configuration, saved_plan, summary, girders, task_rows):
+    """Independently rebuild only the custom construction delivery, read-only.
+
+    Geometry, engineering checks and whole-line structural tables have their
+    separate delivery checks. The default README remains a reference profile.
+    """
+    from bridge import pipeline as P
+    cfg = CI.load(configuration)
+    result = P.compute(configuration=cfg)
+    expected = CP.serializable(result["construction"])
+    # Canonical JSON compares exact structure/types and rejects nonfinite values.
+    dump = lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
+    if dump(saved_plan) != dump(expected):
+        raise ValueError("construction_plan differs from independent configuration rebuild")
+    wanted_tasks = [{k: str(v) for k,v in row.items()} for row in CP.table(result["construction"])]
+    if task_rows != wanted_tasks:
+        raise ValueError("construction_tasks.csv differs from independent configuration rebuild")
+    wanted_girders = [{k: str(v) for k,v in row.items()} for row in P.girder_rows(result)]
+    if girders != wanted_girders:
+        raise ValueError("girders.csv has a different baseline/calendar/profile")
+    for key, value in result["summary"].items():
+        value = value.isoformat() if hasattr(value,"isoformat") else value
+        if key not in summary or summary[key] != value:
+            raise ValueError("summary baseline differs at " + key)
+    if summary.get("beds") != cfg["baseline"]["n_beds"]:
+        raise ValueError("summary configured bed count differs")
+    return {"configuration_sha256": expected["configuration_sha256"], "mode": cfg["mode"],
+            "crew_strategy": expected["crew_strategy"], "beds": cfg["baseline"]["n_beds"],
+            "calendar": cfg["calendar"], "tasks": len(expected["tasks"]), "held_tasks": expected["held_tasks"],
+            "forecast_finish": expected["finish"], "effective_finish": expected["effective_finish"],
+            "scope": "construction JSON/CSV, girder baseline and summary; default README/geometry/whole-line results checked separately"}
 
 
 def n(s):
@@ -199,6 +249,24 @@ def bearing_movement_claims():
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    parser = argparse.ArgumentParser(description="Default README numeric claims or a custom construction profile")
+    parser.add_argument("--construction-config", help="shared input JSON (otherwise environment/default)")
+    parser.add_argument("--profile-summary", action="store_true", help="only independently verify construction profile artifacts; no default README claims")
+    parser.add_argument("--data-dir", default=str(DATA_DIR))
+    parser.add_argument("--readme", default=str(Path(ROOT) / "README.md"))
+    parser.add_argument("--ifc", default=str(Path(ROOT) / "model" / "bridge_bim.ifc"))
+    args = parser.parse_args()
+    settings = CI.load(args.construction_config)
+    plan_path = Path(args.data_dir) / "construction_plan.json"
+    saved_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    if args.profile_summary:
+        report = validate_profile(settings, saved_plan, json.loads((Path(args.data_dir) / "summary.json").read_text(encoding="utf-8")), rows_at(Path(args.data_dir) / "girders.csv"), rows_at(Path(args.data_dir) / "construction_tasks.csv"))
+        print("PASS construction profile " + json.dumps(report, ensure_ascii=False, sort_keys=True))
+        return
+    if saved_plan["configuration"] != settings or saved_plan["configuration_sha256"] != CI.fingerprint(settings):
+        raise ValueError("README artifacts have a different construction input; rebuild first")
+    load_artifacts(Path(args.data_dir), Path(args.ifc), Path(args.readme))
+    baseline, cal = settings["baseline"], settings["calendar"]
     cls = Counter(r["class"] for r in ELEMENTS)
     kinds = Counter(M.support_kind(k) for k in range(C.N_SPANS + 1))
     st = M.support_stations()
@@ -427,9 +495,9 @@ def main():
           [cls["girder"], len(REACTIONS), len(REACTIONS) - n_temp, n_temp])
     # ---- 梁场与 4D
     claim("梁场布置", r"(\d+) 个制梁台座、(\d+) 个存梁位 × (\d+) 层、两台 (\d+) t 龙门吊抬吊、钢筋加工区，\s*\n运梁便道 (\d+) m",
-          [C.N_BEDS, C.STORAGE_POSITIONS, C.STORAGE_LAYERS, "%d" % C.GANTRY_SWL_T, "%d" % round(SUMMARY["haul_route_m"])])
-    claim("工效", r"每个台座 (\d+) 天一个周期，开浇满 (\d+) 天才能架设；架桥机每天 (\d+) 个有效工时，\s*\n每片梁 (\d+) 小时、每跨架完过孔 (\d+) 小时，左幅架完转场 (\d+) 天",
-          [C.BED_CYCLE_DAYS, C.MIN_AGE_DAYS, "%d" % C.DAY_HOURS, "%d" % C.ERECT_HOURS, "%d" % C.LAUNCH_HOURS, C.TRANSFER_DAYS])
+          [baseline["n_beds"], C.STORAGE_POSITIONS, C.STORAGE_LAYERS, "%d" % C.GANTRY_SWL_T, "%d" % round(SUMMARY["haul_route_m"])])
+    claim("工效", r"每个台座 (\d+) 天一个周期，开浇满 (\d+) 天才能架设；架桥机每天 ([\d.]+) 个有效工时，\s*\n每片梁 ([\d.]+) 小时、每跨架完过孔 ([\d.]+) 小时，左幅架完转场 (\d+) 天",
+          construction_claim_values(settings)["productivity"])
     claim("排程", r"梁场 \*\*([\d-]+)\*\* 开浇，架桥机 \*\*([\d-]+)\*\* 开架、\*\*([\d-]+)\*\* 架完，历时 \*\*(\d+)\*\* 天，\s*\n等于「梁全部备齐时」架桥机本身的极限工期 (\d+) 天——\*\*(\d+)\*\* 天等梁。存梁峰值 \*\*(\d+)\*\* 片（\*\*([\d-]+)\*\*），\s*\n最长存梁 (\d+) 天，架设时最短龄期 (\d+) 天",
           [SUMMARY["cast_first"], SUMMARY["erect_first"], SUMMARY["erect_last"], SUMMARY["erect_days"],
            SUMMARY["machine_bound_days"], SUMMARY["wait_days"], SUMMARY["storage_peak"], SUMMARY["storage_peak_day"],
@@ -450,7 +518,7 @@ def main():
                                                                                 re.escape(r["spans"]), r["piers"]),
               [r["erected"], r["continuity_cast"], r["conversion"]])
     claim("梁场图说明", r"存梁峰值日的梁场：台座上在制 (\d+) 片、存梁区 (\d+) 片",
-          [min(C.N_BEDS, sum(1 for g in GIRDERS if g["cast"] <= SUMMARY["storage_peak_day"] < g["to_storage"])),
+          [min(baseline["n_beds"], sum(1 for g in GIRDERS if g["cast"] <= SUMMARY["storage_peak_day"] < g["to_storage"])),
            SUMMARY["storage_peak"]])
     # ---- IFC
     claim("IFC 桥梁分部", r"共 (\d+) 个 IfcBridgePart", [len(IFC.by_type("IfcBridgePart"))])
@@ -461,6 +529,10 @@ def main():
           [len(tasks), sum(1 for t in tasks if t.Name.startswith("预制 ")), sum(1 for t in tasks if t.Name.startswith("架设 G-")),
            sum(1 for t in tasks if t.Name.startswith("体系转换 "))])
     claim("IFC 顺序关系", r"(\d+) 条 IfcRelSequence", [len(IFC.by_type("IfcRelSequence"))])
+    assigned_tasks = {rel.RelatingProcess.id() for rel in IFC.by_type("IfcRelAssignsToProcess")
+                      if any(o.is_a("IfcCrewResource") for o in rel.RelatedObjects)}
+    claim("IFC 标准资源与日历", r"标准资源/日历：(\d+) 个 IfcCrewResource、(\d+) 个 IfcWorkCalendar，(\d+) 个任务通过 IfcRelAssignsToProcess 分配计划班组",
+          [len(IFC.by_type("IfcCrewResource")), len(IFC.by_type("IfcWorkCalendar")), len(assigned_tasks)])
     sm = ifc_structure()
     s1, s2 = sm.get("施工阶段一：预制梁简支", (0, 0, 0)), sm.get("施工阶段二：体系转换后的连续梁", (0, 0, 0))
     claim("IFC 结构分析模型", r"(两)个 IfcStructuralAnalysisModel，按施工阶段分开。阶段一「预制梁简支」：(\d+) 根 IfcStructuralCurveMember"
