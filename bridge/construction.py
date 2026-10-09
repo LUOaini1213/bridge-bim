@@ -24,7 +24,7 @@ CONVERSION_WORK_HOURS = 2.0
 NAMES = {"diaphragm": "横隔板", "wet_joint": "湿接缝", "cantilever": "翼缘现浇段",
          "pavement": "桥面铺装", "barrier": "护栏", "expansion_joint": "伸缩装置"}
 FOLLOW_ON = frozenset(NAMES)
-NOTICE = ("新增工序工效、养护停留及每幅每工种一班组均为可配置演示假设，非现场实测；"
+NOTICE = ("新增工序工效与养护停留为可配置演示假设；班组目前固定每幅每工种一组，非现场实测；"
           "养护时长不代表强度验收。完整示例计划顺延连续段与转换；原架梁基线及力学结果保留作对照。")
 
 
