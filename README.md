@@ -435,7 +435,7 @@ BridgeBIM_Structural 里带着内力设计值、挠度、反力与压应力，�
 [`bridge/construction.py`](bridge/construction.py) 是 IFC、Rhino、CSV/JSON 共用的完整示例计划。
 原预制、架梁时刻保持不变；横隔板 → 湿接缝 → 翼缘现浇（每跨）→ 连续段/养护 → 体系转换（每联）
 → 铺装/养护 → 护栏/养护 → 伸缩装置（相邻两联完成后）有明确完成—开始依赖。
-同幅同工种一班组，施工按原每日工作时段计，养护按连续时间计，施工班组可在养护期间转到下一跨。
+班组目前固定为同幅同工种一组，不支持通过参数改变班组数量；施工按原每日工作时段计，养护按连续时间计，施工班组可在养护期间转到下一跨。
 默认横隔板、湿接缝、翼缘每跨各施工 4 h、养护 48 h；铺装、护栏每联各施工 20 h、养护 72 h；
 伸缩装置每个施工 4 h，转换作业 2 h（`CONVERSION_WORK_HOURS`）；连续段沿用原每日工时与 7 天养护。
 后续配置在 `construction.ASSUMPTIONS`，`build(..., assumptions={...})` 可覆盖。
@@ -538,9 +538,15 @@ python scripts/run_rhino.py --jobs rhino/verification_jobs.json --verify-panel
 把模型的米转换为毫米后检查梁与梁的实体相交体积及可配置净距。默认净距为 25 mm；
 支座与设计现浇连接不在此报告范围内，网格见证点不声称为精确最短距离。
 源模型不写回；碰撞、净距/接触、几何内核未决分别记录构件编号、Rhino GUID、零件和位置。
+两个实际 Brep 都通过轴对齐盒认证时才记录 `actual_gap_mm`，并区分接触、低于阈值及达到阈值；
+达到阈值的 `at_clearance` 是边界记录，不计净距不足。比较的数值 epsilon 不代表施工允许偏差。
+其他几何的 MeshClash 见证只列为 `threshold_candidate` 待距离复核，不能当成精确最短距离；
+认证的箱体距离、原网格见证点及接触搜索结果分别保留，不用包络距离冒充一般实体距离。
 空或失败的布尔结果必须有经验证的几何证明才能判无碰撞，否则列为未决。
 原生反例覆盖穿透、完全包含、不同高度、阈值、仅接触及包络重叠但位于孔洞中的情况，
 另注入失败的交线 API，要求产生未决而非通过。
+原六组反例之外，附加同一模型间距在阈值上方、恰好达到阈值及阈值下方的三次边界检查，
+并核对小幅低于阈值、非盒网格候选和未认证曲面无网格见证时仍需复核的反例。
 
 ```bash
 python scripts/run_spatial_quality.py --clearance-mm 25  # 需要 Rhino 8
@@ -570,7 +576,7 @@ python scripts/mutation_drill.py          # 变异演练：把求解器改错一
 ```
 
 CI 跑两组：`bridge/` 只用标准库、兼容 Python 3.9（Rhino 8 内置的 CPython 就是 3.9，建模脚本 import 同一份代码），
-先单独跑一遍不装任何依赖的测试；再装 ifcopenshell、rhino3dm 与 openseespy 跑全部 204 个测试、重导 IFC 比对、回算 README。
+先单独跑一遍不装任何依赖的测试；再装 ifcopenshell、rhino3dm 与 openseespy 跑全部 208 个测试、重导 IFC 比对、回算 README。
 OpenSeesPy 只在测试里用，拿来互核自写的求解器（它的许可对研究、教学与内部使用免费）。
 Rhino 那一步在本机跑，它的产物 `model/bridge_bim.3dm` 由 rhino3dm 独立读回来核。
 

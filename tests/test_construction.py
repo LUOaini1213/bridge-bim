@@ -64,6 +64,8 @@ class CompletePlan(unittest.TestCase):
         exported = CP.serializable(self.plan)
         self.assertEqual(json.loads(json.dumps(exported)), exported)
         self.assertEqual(exported["finish"], "2027-02-20T16:00:00")
+        self.assertIn("工效与养护停留为可配置", exported["notice"])
+        self.assertIn("班组目前固定每幅每工种一组", exported["notice"])
         with self.assertRaises(ValueError):
             CP.build(self.elements, self.rows, {"pavement": {"work_hours": -1}})
         with self.assertRaises(ValueError):
