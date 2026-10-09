@@ -13,7 +13,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from bridge import config as C, yard as Y, construction as CP, stage_results as SR  # noqa: E402
 from bridge import pipeline as P                     # noqa: E402
-from bridge.numcmp import compare, compare_json      # noqa: E402
+from bridge.numcmp import compare, compare_stage_json, stage_roundoff_summary  # noqa: E402
 
 DATA = os.path.join(ROOT, "data")
 
@@ -84,10 +84,15 @@ def main():
             old = open(path, encoding="utf-8", newline="").read() if os.path.exists(path) else ""
             # Only the unrounded stage dataset uses semantic float checks.
             # The original fixed-decimal tables retain their stricter gate.
-            # Near-zero conversion moments subtract larger reactions. The
-            # measured 3.11/3.13 cancellation is at most 1.984e-9 in that
-            # regime; use a 2e-9 absolute floor, retaining 1e-9 relative.
-            ok, k, why = compare_json(old, t, float_atol=2e-9) if n == "stage_results.json" else compare(old, t, "decimal")
+            # Match the existing OpenSees moment-vector norm check; all other
+            # fields retain their pointwise gate. Report the complete float
+            # difference set, not just the first failing Linux ordinate.
+            if n == "stage_results.json":
+                diagnostics = []
+                ok, k, why = compare_stage_json(old, t, diagnostics=diagnostics)
+                print("STAGE ROUNDOFF " + json.dumps(stage_roundoff_summary(diagnostics), sort_keys=True))
+            else:
+                ok, k, why = compare(old, t, "decimal")
             if not ok:
                 bad.append("%s（%s）" % (n, why or "文件缺失"))
             loose += k

@@ -19,7 +19,7 @@ import rhino3dm                      # noqa: E402
 from bridge import replay as R      # noqa: E402
 from bridge.pipeline import compute  # noqa: E402
 from bridge import stage_results as SR  # noqa: E402
-from bridge.numcmp import compare_json  # noqa: E402
+from bridge.numcmp import compare_stage_json  # noqa: E402
 
 
 def elements(model):
@@ -88,7 +88,7 @@ def verify(path):
         data = SR.build(result)
         stage = info["stage_result"]
         selected = SR.select(data, stage["stage"], stage["line"])
-        same, _, difference = compare_json(json.dumps(stage), json.dumps(selected), float_atol=2e-9)
+        same, _, difference = compare_stage_json(json.dumps(stage), json.dumps(selected), selected=True)
         if not same:
             raise AssertionError("saved structural values differ from actual existing calculations")
         curves = [obj for obj in model.Objects if obj.Attributes.GetUserString("result_kind") == "moment_curve"]
