@@ -11,6 +11,8 @@
 不带小数点的整数（编号、计数、实体号）两种模式下都必须完全相同。
 """
 import re
+import json
+import math
 
 _NUM = re.compile(r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?")
 
@@ -58,3 +60,51 @@ def compare(a, b, mode="decimal"):
             return False, diffs, "数值差超过 1e-9（相对）：%s vs %s" % (va, vb)
         diffs += 1
     return True, diffs, None
+
+
+def compare_json(a, b, float_atol=0.0):
+    """Strict JSON schema/value comparison, using the existing 1e-9 gate
+    only for finite float leaves. A caller may supply a small, explicit
+    absolute floor for cancellation near zero. IDs, integer indices/counts,
+    booleans, list order/length and dictionary keys remain exact. This is
+    for unrounded structural results, not fixed-decimal engineering tables.
+    """
+    if not math.isfinite(float_atol) or float_atol < 0:
+        raise ValueError("JSON float absolute tolerance must be finite and nonnegative")
+    try:
+        left, right = json.loads(a), json.loads(b)
+    except (ValueError, TypeError) as error:
+        return False, 0, "JSON 无效：" + str(error)
+    diffs = [0]
+
+    def visit(x, y, path):
+        if type(x) is not type(y):
+            return "%s 类型不同：%s vs %s" % (path, type(x).__name__, type(y).__name__)
+        if isinstance(x, dict):
+            if set(x) != set(y):
+                return path + " 字段不同"
+            for key in x:
+                failure = visit(x[key], y[key], path + "." + key)
+                if failure:
+                    return failure
+        elif isinstance(x, list):
+            if len(x) != len(y):
+                return path + " 列表长度不同"
+            for index, (first, second) in enumerate(zip(x, y)):
+                failure = visit(first, second, "%s[%d]" % (path, index))
+                if failure:
+                    return failure
+        elif isinstance(x, float):
+            if not math.isfinite(x) or not math.isfinite(y):
+                return path + " 包含非有限浮点数"
+            limit = max(float_atol, 1e-9 * max(1.0, abs(x), abs(y)))
+            if abs(x - y) > limit:
+                return "%s 浮点差超过容差 %g（1e-9相对，绝对下限%g）：%r vs %r" % (path, limit, float_atol, x, y)
+            if x != y:
+                diffs[0] += 1
+        elif x != y:
+            return "%s 值不同：%r vs %r" % (path, x, y)
+        return None
+
+    failure = visit(left, right, "$")
+    return failure is None, diffs[0], failure

@@ -11,9 +11,9 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from bridge import config as C, yard as Y           # noqa: E402
+from bridge import config as C, yard as Y, construction as CP, stage_results as SR  # noqa: E402
 from bridge import pipeline as P                     # noqa: E402
-from bridge.numcmp import compare                    # noqa: E402
+from bridge.numcmp import compare, compare_json      # noqa: E402
 
 DATA = os.path.join(ROOT, "data")
 
@@ -46,6 +46,9 @@ def outputs():
     })
     sm.update(P.structure_summary(r))
     return {
+        "construction_tasks.csv": csv_text(CP.table(CP.build(r["els"], r["rows"]))),
+        "construction_plan.json": json.dumps(CP.serializable(CP.build(r["els"], r["rows"])), ensure_ascii=False, indent=1) + "\n",
+        "stage_results.json": json.dumps(SR.build(r), ensure_ascii=False, indent=1) + "\n",
         "alignment_stations.csv": csv_text(P.alignment_rows()),
         "elements.csv": csv_text([{"eid": e.eid, "class": e.cls, "part": e.part, "deck": e.deck,
                                    "volume_m3": "%.4f" % e.volume} for e in r["els"]]),
@@ -79,7 +82,12 @@ def main():
         for n, t in files.items():
             path = os.path.join(DATA, n)
             old = open(path, encoding="utf-8", newline="").read() if os.path.exists(path) else ""
-            ok, k, why = compare(old, t, "decimal")
+            # Only the unrounded stage dataset uses semantic float checks.
+            # The original fixed-decimal tables retain their stricter gate.
+            # Near-zero conversion moments subtract larger reactions. The
+            # measured 3.11/3.13 cancellation is at most 1.984e-9 in that
+            # regime; use a 2e-9 absolute floor, retaining 1e-9 relative.
+            ok, k, why = compare_json(old, t, float_atol=2e-9) if n == "stage_results.json" else compare(old, t, "decimal")
             if not ok:
                 bad.append("%s（%s）" % (n, why or "文件缺失"))
             loose += k
@@ -87,7 +95,7 @@ def main():
             print("MISMATCH: data/ 与重算结果不一致：" + "；".join(bad))
             sys.exit(1)
         if loose:
-            print("PASS data/ 的 %d 个文件与重算结果一致（%d 处数字只差末位 1 个单位：跨平台数学库的舍入差）"
+            print("PASS data/ 的 %d 个文件与重算结果一致（%d 处跨平台浮点舍入差在各文件严格容差以内）"
                   % (len(files), loose))
         else:
             print("PASS data/ 的 %d 个文件与重算结果逐字节一致" % len(files))

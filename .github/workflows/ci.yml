@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.9"
       - name: Alignment, model, schedule and structure tests (a counterexample per check) — stdlib only
-        run: python -m unittest tests.test_alignment tests.test_model tests.test_schedule tests.test_structure -v
+        run: python -m unittest tests.test_alignment tests.test_model tests.test_schedule tests.test_structure tests.test_replay tests.test_construction tests.test_stage_results -v
       - name: data/ is exactly what the model computes
         run: python scripts/build_data.py --check
 
@@ -38,5 +38,13 @@ jobs:
         run: python -m pytest tests -v
       - name: IFC equals a fresh export
         run: python scripts/export_ifc.py --check
+      - name: IDS delivery information requirements
+        run: python scripts/check_ids.py
+      - name: Verify saved native three-dimensional quality report
+        run: python scripts/check_spatial_quality.py
+      - name: Independently read every saved native replay and stage result
+        run: python scripts/check_replay.py --all
+      - name: Verify native time panel document lifecycle evidence
+        run: python scripts/check_lifecycle.py
       - name: Every number in README is recomputed from the artifacts
         run: python scripts/check_readme.py
