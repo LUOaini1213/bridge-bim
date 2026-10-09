@@ -1,5 +1,5 @@
 {
-  "configuration_sha256": "cc68058d7454bb61295f5317e4db9bb470efd11658fca37833369add657bb743",
+  "configuration_sha256": "89e8cc28d313ec907cbbba1af9696f3dd084cc568a0a92f32351bac4abfe48f9",
   "construction_config": {
     "baseline": {
       "bed_cycle_days": 7,
@@ -85,6 +85,9 @@
     },
     "mode": "simulation",
     "releases": [],
+    "scheduling": {
+      "crew_strategy": "fixed_route"
+    },
     "schema": 1,
     "source": {
       "author": "bridge-bim",
@@ -11880,7 +11883,7 @@
     "png": "bridge_2026-12-07_0800.png"
   },
   "limitations": [
-    "施工工时、养护、班组与工作日历来自同源 JSON 配置；默认为演示假设，非现场实测；simulation 使用 synthetic release，养护时长不代表强度验收；project 须有放行记录并满足前置门禁。计划及最早允许预测均非实测进度，原整联力学案例不代表日期部分架设重算。",
+    "施工工时、养护、班组与工作日历来自同源 JSON 配置；默认为演示假设，非现场实测；simulation 使用 synthetic release，养护时长不代表强度验收；project 须有放行记录并满足前置门禁。计划及满足所选班组策略与门禁的可行预测均非实测进度，原整联力学案例不代表日期部分架设重算。",
     "日期输入表示日末；日期+时刻按任务开始/施工结束/养护结束/转换结束精确判断。不模拟吊装运动或混凝土渐增体积。",
     "下部结构、垫石与永久支座作为静态参照，不代表已按该日期施工完成。",
     "梁场仅统计在制与存梁数量；原模型的峰值日梁场快照在回放中隐藏。",

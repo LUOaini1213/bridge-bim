@@ -55,7 +55,11 @@ def moment(value):
 
 def validate(value):
     data = deepcopy(value)
-    _keys(data, ("schema", "mode", "source", "calendar", "baseline", "durations", "crews", "releases"), "input")
+    # Add only the newly introduced policy to a complete previous schema-1
+    # profile. Other missing/unknown fields remain validation errors.
+    if isinstance(data, dict) and "scheduling" not in data:
+        data["scheduling"] = {"crew_strategy": "fixed_route"}
+    _keys(data, ("schema", "mode", "source", "calendar", "baseline", "durations", "crews", "scheduling", "releases"), "input")
     if type(data["schema"]) is not int or data["schema"] != 1 or data["mode"] not in ("simulation", "project"):
         raise ValueError("schema=1 and mode=simulation/project required")
     _keys(data["source"], ("id", "reference", "author"), "source")
@@ -101,6 +105,9 @@ def validate(value):
         _keys(counts, CLASSES, "crews." + deck)
         for cls, count in counts.items():
             _number(count, deck + "." + cls, strict=True, integer=True)
+    _keys(data["scheduling"], ("crew_strategy",), "scheduling")
+    if data["scheduling"]["crew_strategy"] not in ("fixed_route", "earliest_gap"):
+        raise ValueError("crew_strategy must be fixed_route or earliest_gap")
     if not isinstance(data["releases"], list):
         raise ValueError("releases must be a list")
     seen = set()
@@ -127,7 +134,8 @@ def load(configuration=None):
 
 
 def fingerprint(configuration):
-    return hashlib.sha256(json.dumps(configuration, ensure_ascii=False, sort_keys=True, allow_nan=False).encode("utf-8")).hexdigest()
+    normalized = validate(configuration)
+    return hashlib.sha256(json.dumps(normalized, ensure_ascii=False, sort_keys=True, allow_nan=False).encode("utf-8")).hexdigest()
 
 
 class Calendar:

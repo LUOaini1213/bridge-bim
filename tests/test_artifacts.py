@@ -515,8 +515,10 @@ class Ifc4D(unittest.TestCase):
         removed = Counter()
         for rel in IFC.by_type("IfcRelAssignsToProcess"):
             t = rel.RelatingProcess
-            self.assertTrue(t.Name.startswith("体系转换 "))
             for o in rel.RelatedObjects:
+                if o.is_a("IfcConstructionResource"):
+                    continue
+                self.assertTrue(t.Name.startswith("体系转换 "))
                 self.assertEqual(BY[o.Name].cls, "temp_support")
                 removed[o.Name] += 1
         self.assertEqual(set(removed), {e.eid for e in R["els"] if e.cls == "temp_support"})
@@ -533,7 +535,7 @@ class Ifc4D(unittest.TestCase):
                 if task.is_a("IfcTask"):
                     outputs.setdefault(task.Identification, set()).add(relation.RelatingProduct.Name)
         for relation in IFC.by_type("IfcRelAssignsToProcess"):
-            removals[relation.RelatingProcess.Identification] = {o.Name for o in relation.RelatedObjects}
+            removals[relation.RelatingProcess.Identification] = {o.Name for o in relation.RelatedObjects if o.is_a("IfcProduct")}
         for item in complete["tasks"]:
             actual = tasks[item["id"]]
             self.assertEqual(actual.TaskTime.ScheduleStart, item["start"].isoformat())

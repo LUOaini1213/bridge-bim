@@ -9,6 +9,7 @@ from datetime import date, datetime, time, timedelta
 import math
 from . import config as C
 from . import construction_input as CI
+from .crew_schedule import CrewPool
 from .model import unit_bounds, unit_of_span
 
 NAMES = {"diaphragm": "横隔板", "wet_joint": "湿接缝", "cantilever": "翼缘现浇段",
@@ -16,7 +17,7 @@ NAMES = {"diaphragm": "横隔板", "wet_joint": "湿接缝", "cantilever": "翼�
 FOLLOW_ON = frozenset(NAMES)
 NOTICE = ("施工工时、养护、班组与工作日历来自同源 JSON 配置；默认为演示假设，非现场实测；"
           "simulation 使用 synthetic release，养护时长不代表强度验收；project 须有放行记录并满足前置门禁。"
-          "计划及最早允许预测均非实测进度，原整联力学案例不代表日期部分架设重算。")
+          "计划及满足所选班组策略与门禁的可行预测均非实测进度，原整联力学案例不代表日期部分架设重算。")
 
 
 def at(day, hours=0):
@@ -56,35 +57,34 @@ def build(elements, rows, assumptions=None, configuration=None):
             raise ValueError("work_hours > 0 and cure_hours >= 0 required")
     tasks, by_id, outputs, removals = [], {}, {}, {}
     releases = {(r["task_id"], r["gate"]): r for r in settings["releases"]}
-    pools, effective_pools = {}, {}
-
-    def resource(pool, deck, cls, earliest):
-        if cls not in CI.CLASSES:
-            return earliest, None, None
-        key = (deck, cls)
-        available = pool.setdefault(key, [at(CI.day(settings["baseline"]["yard_start"]))] * settings["crews"][deck][cls])
-        index = min(range(len(available)), key=lambda i: (available[i], i))
-        return max(earliest, available[index]), key, index
+    strategy = settings["scheduling"]["crew_strategy"]
+    origin = at(CI.day(settings["baseline"]["yard_start"]))
+    pools = CrewPool(calendar, settings["crews"], origin, strategy)
+    effective_pools = CrewPool(calendar, settings["crews"], origin, strategy)
 
     def task(ident, label, cls, start, hours, eids=(), predecessors=(), cure=0,
              deck="", unit=0, span=0, removes=(), example=False,
              launch_before=0, transfer_before=None, effective_not_before=None):
         if ident in by_id:
             raise ValueError("duplicate task: " + ident)
-        start, pool_key, pool_index = resource(pools, deck, cls, start)
-        start = work_start(start) if hours else start
-        finish_work = work_end(start, hours) if hours else start
+        requested_start = start
+        if cls in CI.CLASSES:
+            start, finish_work, crew, allocation_waits = pools.reserve(deck, cls, start, hours, ident)
+        else:
+            start = work_start(start) if hours else start
+            finish_work = work_end(start, hours) if hours else start
+            crew, allocation_waits = "", []
+            if start > requested_start:
+                allocation_waits.append("calendar: next working shift")
         item = {"id": ident, "name": label, "class": cls, "deck": deck, "unit": unit, "span": span,
                 "start": start, "work_finish": finish_work, "finish": finish_work + timedelta(hours=cure),
                 "work_hours": float(hours), "cure_hours": float(cure), "example_assumption": settings["mode"] == "simulation",
                 "progress_basis": "forecast_only_not_measured", "added_process": example,
                 "elements": list(eids), "removes": list(removes), "predecessors": list(predecessors),
-                "crew_id": "%s:%s:%d" % (deck, cls, pool_index + 1) if pool_key else "",
+                "crew_id": crew, "crew_strategy": strategy, "wait_reasons": allocation_waits,
                 "mode": settings["mode"], "source": dict(settings["source"])}
         item["machine_launch_before_hours"] = float(launch_before)
         item["machine_transfer_before_days"] = transfer_before
-        if pool_key:
-            pools[pool_key][pool_index] = finish_work
         for predecessor in predecessors:
             if by_id[predecessor]["finish"] > start:
                 raise ValueError("dependency finishes after start: " + predecessor + " -> " + ident)
@@ -96,14 +96,19 @@ def build(elements, rows, assumptions=None, configuration=None):
                           "synthetic": settings["mode"] == "simulation",
                           "record": releases.get((ident, gate))} for gate in gates]
         holds = []
+        effective_waits = []
         earliest = start
         for predecessor in predecessors:
             ready = by_id[predecessor]["release_at"]
             if ready is None:
                 holds.append("predecessor not released: " + predecessor)
             else:
+                if ready > earliest:
+                    effective_waits.append("predecessor release: " + predecessor)
                 earliest = max(earliest, ready)
         if effective_not_before is not None:
+            if effective_not_before > earliest:
+                effective_waits.append("machine: continuity lag after erection")
             earliest = max(earliest, effective_not_before)
         # A delayed machine chain still requires each unsplit launch and the
         # next-day-plus-transfer gap; old forecast gaps cannot substitute it.
@@ -111,38 +116,50 @@ def build(elements, rows, assumptions=None, configuration=None):
             machine_ready = by_id[predecessors[-1]]["release_at"]
             if machine_ready is not None:
                 if transfer_before is not None:
-                    earliest = max(earliest, at(machine_ready.date() + timedelta(days=1 + transfer_before)))
+                    transfer_ready = at(machine_ready.date() + timedelta(days=1 + transfer_before))
+                    if transfer_ready > earliest:
+                        effective_waits.append("machine: next-day transfer interval")
+                    earliest = max(earliest, transfer_ready)
                 elif launch_before:
                     launch_start = work_start(machine_ready)
                     if (at(launch_start.date(), settings["calendar"]["day_hours"]) - launch_start).total_seconds() / 3600 < launch_before - 1e-9:
                         launch_start = work_start(at(launch_start.date() + timedelta(days=1)))
-                    earliest = max(earliest, work_end(launch_start, launch_before))
+                    launch_ready = work_end(launch_start, launch_before)
+                    if launch_ready > earliest:
+                        effective_waits.append("machine: unsplit launch work")
+                    earliest = max(earliest, launch_ready)
         if settings["mode"] == "project":
             for gate in item["gates"]:
                 if gate["record"] is None:
                     holds.append("missing approval: " + gate["name"])
                 elif entry:
+                    if CI.moment(gate["record"]["approved_at"]) > earliest:
+                        effective_waits.append("entry approval: " + gate["name"])
                     earliest = max(earliest, CI.moment(gate["record"]["approved_at"]))
         entry_blocked = any(h.startswith("predecessor") for h in holds) or (entry and bool(holds))
         if entry_blocked:
             effective_start = effective_work = effective_finish = ready = None
             effective_crew = ""
         else:
-            earliest, effective_key, effective_index = resource(effective_pools, deck, cls, earliest)
-            effective_start = work_start(earliest) if hours else earliest
-            if cls == "girder" and (at(effective_start.date(), settings["calendar"]["day_hours"]) - effective_start).total_seconds() / 3600 < hours - 1e-9:
-                effective_start = work_start(at(effective_start.date() + timedelta(days=1)))
-            effective_work = work_end(effective_start, hours) if hours else effective_start
+            if cls in CI.CLASSES:
+                effective_start, effective_work, effective_crew, resource_waits = effective_pools.reserve(deck, cls, earliest, hours, ident)
+                effective_waits.extend(resource_waits)
+            else:
+                effective_start = work_start(earliest) if hours else earliest
+                if cls == "girder" and (at(effective_start.date(), settings["calendar"]["day_hours"]) - effective_start).total_seconds() / 3600 < hours - 1e-9:
+                    effective_start = work_start(at(effective_start.date() + timedelta(days=1)))
+                    effective_waits.append("machine: erection must fit one shift")
+                if effective_start > earliest and not effective_waits:
+                    effective_waits.append("calendar: next working shift")
+                effective_work = work_end(effective_start, hours) if hours else effective_start
+                effective_crew = ""
             effective_finish = effective_work + timedelta(hours=cure)
-            effective_crew = "%s:%s:%d" % (deck, cls, effective_index + 1) if effective_key else ""
-            if effective_key:
-                effective_pools[effective_key][effective_index] = effective_work
             ready = None if holds else effective_finish
             if ready is not None and settings["mode"] == "project":
                 ready = max([ready] + [CI.moment(g["record"]["approved_at"]) for g in item["gates"]])
         item.update(effective_start=effective_start, effective_work_finish=effective_work,
                     effective_finish=effective_finish, release_at=ready, effective_crew_id=effective_crew,
-                    status="HELD" if holds else "PLANNED", hold_reasons=holds)
+                    status="HELD" if holds else "PLANNED", hold_reasons=holds, effective_wait_reasons=effective_waits)
         for eid in eids:
             if eid in outputs:
                 raise ValueError("duplicate construction output: " + eid)
@@ -165,8 +182,8 @@ def build(elements, rows, assumptions=None, configuration=None):
                   transfer_before=settings["baseline"]["transfer_days"] if row["pos"] == 1 and row["span"] == 1 and previous else None)
         erected[eid], previous = te, te["id"]
     last_span = {}
-    # One work crew per deck and work type. Crew advances after placement;
-    # the separate curing hold can overlap its next span's placement.
+    # A configurable crew pool per deck and work type. fixed_route preserves
+    # span-order dispatch; earliest_gap may insert later tasks into free slots.
     for deck, _ in C.DECKS:
         for span in range(1, C.N_SPANS + 1):
             preds = [erected[r["girder"]]["id"] for r in rows if r["deck"] == deck and r["span"] == span]
@@ -222,6 +239,7 @@ def build(elements, rows, assumptions=None, configuration=None):
             "conversions": conversions, "start": min(t["start"] for t in tasks),
             "finish": max(t["finish"] for t in tasks), "assumptions": inputs, "notice": NOTICE,
             "configuration": settings, "configuration_sha256": CI.fingerprint(settings),
+            "crew_strategy": strategy,
             "mode": settings["mode"], "held_tasks": sum(t["status"] == "HELD" for t in tasks),
             "reference_baseline": {"file":"data/conversions.csv", "lag_days":C.CONT_CAST_LAG_DAYS,
                                    "cure_days":C.CONT_CURE_DAYS,

@@ -95,12 +95,13 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--write-rules", action="store_true", help="Regenerate delivery.ids from quality/profile.json")
+    parser.add_argument("--no-write-reports", action="store_true", help="Validate without changing committed reports")
     args = parser.parse_args()
     if args.write_rules:
         path = ROOT / "quality" / "delivery.ids"
         if not make_rules().to_xml(str(path)):
             sys.exit("IDS XML schema validation failed")
-    result = validate_model(write_reports=True)
+    result = validate_model(write_reports=not args.no_write_reports)
     print("%s IDS: %d specifications, %d checks, %d failures" % (
         "PASS" if result["status"] else "FAIL", result["total_specifications"], result["total_checks"], result["total_checks_fail"]))
     for spec in result["specifications"]:

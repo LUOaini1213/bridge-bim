@@ -52,6 +52,8 @@ import ifcopenshell.api.root
 import ifcopenshell.api.sequence
 import ifcopenshell.api.spatial
 import ifcopenshell.api.group
+import ifcopenshell.api.control
+import ifcopenshell.api.resource
 import ifcopenshell.api.structural
 import ifcopenshell.api.unit
 import ifcopenshell.geom
@@ -710,6 +712,7 @@ def build_schedule(f, r, products):
     wp = sq.add_work_plan(f, name="施工计划（工效为假设值）", predefined_type="PLANNED")
     ws = sq.add_work_schedule(f, name="梁场预制与架梁 4D 计划", predefined_type="PLANNED", work_plan=wp)
     complete = r["construction"]
+    crews, calendar = build_crew_calendar(f, complete)
     ws.Name = "完整施工计划（" + complete["mode"] + "；非实测进度）"
     wp.Description = ws.Description = CP.NOTICE
     first, last = complete["start"], complete["finish"]
@@ -761,6 +764,9 @@ def build_schedule(f, r, products):
             "WorkFinish": _iso(item["work_finish"]), "Source": json.dumps(item["source"], ensure_ascii=False, sort_keys=True),
             "Mode": complete["mode"], "ConfigurationSHA256": complete["configuration_sha256"],
             "CrewId": item["crew_id"], "EffectiveCrewId": item["effective_crew_id"],
+            "CrewStrategy": item["crew_strategy"],
+            "WaitReasons": json.dumps(item["wait_reasons"], ensure_ascii=False),
+            "EffectiveWaitReasons": json.dumps(item["effective_wait_reasons"], ensure_ascii=False),
             "HoldReasons": json.dumps(item["hold_reasons"], ensure_ascii=False),
             "ReleaseGates": json.dumps(item["gates"], ensure_ascii=False, sort_keys=True),
             "EffectiveStart": _iso(item["effective_start"]) if item["effective_start"] else "HELD",
@@ -773,6 +779,12 @@ def build_schedule(f, r, products):
             sq.assign_product(f, relating_product=products[eid], related_object=t)
         for eid in item["removes"]:
             sq.assign_process(f, relating_process=t, related_object=products[eid])
+        if item["crew_id"]:
+            # Standard allocation follows Schedule* (forecast); gated effective
+            # allocation is explicitly separate metadata, never an Actual* claim.
+            sq.assign_process(f, relating_process=t, related_object=crews[item["crew_id"]])
+        if cls != "precast":
+            ifcopenshell.api.control.assign_control(f, relating_control=calendar, related_objects=[t])
     for item in complete["tasks"]:
         for predecessor in item["predecessors"]:
             after(actual[predecessor], actual[item["id"]])
@@ -791,6 +803,70 @@ def build_schedule(f, r, products):
         tt.DurationType = "ELAPSEDTIME"
         s0, s1 = min(k[0] for k in kids), max(k[1] for k in kids)
         tt.ScheduleStart, tt.ScheduleFinish, tt.ScheduleDuration = _iso(s0), _iso(s1), _duration(s1 - s0)
+
+
+def build_crew_calendar(f, complete):
+    """Portable standard crew and calendar entities for the forecast schedule."""
+    sq, rr = ifcopenshell.api.sequence, ifcopenshell.api.resource
+    cfg = complete["configuration"]
+    settings = cfg["calendar"]
+    calendar = sq.add_work_calendar(f, name="施工工作日历", predefined_type="FIRSTSHIFT")
+    calendar.Identification = "BRIDGE-CONSTRUCTION-CALENDAR"
+    calendar.Description = "施工工作窗口；养护和换幅间隔仍为连续时间；Schedule 为预测，非实测。"
+
+    def clock(hours):
+        if hours == 24:
+            return "24:00:00"
+        return (datetime.datetime(2000,1,1) + datetime.timedelta(hours=hours)).time().isoformat()
+
+    def window(name, weekdays=None, day=None, exception=False):
+        w = sq.add_work_time(f, work_calendar=calendar, time_type="ExceptionTimes" if exception else "WorkingTimes")
+        w.Name, w.DataOrigin = name, "SIMULATED" if cfg["mode"] == "simulation" else "PREDICTED"
+        if day:
+            w.StartDate = w.FinishDate = day
+        if not exception:
+            pattern = sq.assign_recurrence_pattern(f, parent=w, recurrence_type="WEEKLY" if weekdays else "DAILY")
+            pattern.Interval = 1
+            if weekdays:
+                pattern.WeekdayComponent = sorted(d + 1 for d in weekdays)
+            # IfcTime allows 24:00:00. The 0.8.5 API helper routes strings
+            # through datetime.time (0..23), so retain the legal IFC lexical
+            # value directly rather than accidentally expressing same-day 0h.
+            period = f.create_entity("IfcTimePeriod", StartTime=clock(settings["start_hour"]),
+                                     EndTime=clock(settings["start_hour"] + settings["day_hours"]))
+            pattern.TimePeriods = (period,)
+        return w
+
+    window("每周工作班次", weekdays=settings["weekdays"])
+    for day in sorted(settings["work_dates"]):
+        window("例外工作日 " + day, day=day)
+    for day in sorted(settings["rest_dates"]):
+        window("停工日 " + day, day=day, exception=True)
+    ps = ifcopenshell.api.pset.add_pset(f, product=calendar, name="BridgeBIM_ConstructionCalendar")
+    ifcopenshell.api.pset.edit_pset(f, pset=ps, properties={
+        "ConfigurationSHA256": complete["configuration_sha256"],
+        "CalendarInput": json.dumps(settings, ensure_ascii=False, sort_keys=True),
+        "ForecastOnly": True})
+    resources = {}
+    for deck in ("L", "R"):
+        for cls in CP.CI.CLASSES:
+            for index in range(1, cfg["crews"][deck][cls] + 1):
+                ident = "%s:%s:%d" % (deck,cls,index)
+                crew = rr.add_resource(f, ifc_class="IfcCrewResource", name=ident, predefined_type="SITE")
+                crew.Identification, crew.ObjectType = ident, cls
+                crew.Description = "预测计划班组；有效预测班组另见任务 EffectiveCrewId，不代表现场到场或实测工时。"
+                ifcopenshell.api.control.assign_control(f, relating_control=calendar, related_objects=[crew])
+                allocated = [t for t in complete["tasks"] if t["crew_id"] == ident]
+                if allocated:
+                    usage = rr.add_resource_time(f, resource=crew)
+                    usage.DataOrigin = "SIMULATED" if cfg["mode"] == "simulation" else "PREDICTED"
+                    usage.ScheduleWork = _duration(datetime.timedelta(hours=sum(t["work_hours"] for t in allocated)))
+                    usage.ScheduleUsage = 1.0
+                    usage.ScheduleStart = _iso(min(t["start"] for t in allocated))
+                    usage.ScheduleFinish = _iso(max(t["work_finish"] for t in allocated))
+                    usage.IsOverAllocated = False
+                resources[ident] = crew
+    return resources, calendar
 
 
 # IFC 里这些属性是 SET（无序），ifcopenshell.api 用 Python 集合存，每次运行顺序不同。
