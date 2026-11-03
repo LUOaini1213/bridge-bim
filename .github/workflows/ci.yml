@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.9"
       - name: Alignment, model, schedule and structure tests (a counterexample per check) — stdlib only
-        run: python -m unittest tests.test_alignment tests.test_model tests.test_schedule tests.test_structure tests.test_replay tests.test_construction tests.test_construction_input tests.test_stage_results -v
+        run: python -m unittest tests.test_alignment tests.test_model tests.test_schedule tests.test_structure tests.test_replay tests.test_construction tests.test_construction_input tests.test_stage_results tests.test_plan_ages -v
       - name: data/ is exactly what the model computes
         run: python scripts/build_data.py --check
 
@@ -31,6 +31,8 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+      - name: requirements files are ASCII (old pip reads them in the locale code page, e.g. GBK on Chinese Windows)
+        run: python scripts/check_ascii.py requirements*.txt
       - run: pip install -r requirements.txt
       - name: Full test suite (.3dm ↔ CSV ↔ IFC, geometry engine, alignment kernel, 4D, schema, OpenSees cross-check)
         env:
@@ -56,3 +58,29 @@ jobs:
         run: python scripts/check_construction_resources.py
       - name: Complete delivery input and artifact fingerprints
         run: python scripts/delivery.py --check --manifest-only
+
+  windows:
+    # README 的 PowerShell 复现命令原样跑一遍：用 venv 自带的 pip（不升级）装依赖，
+    # 证明 requirements.txt 在 Windows 上不靠新版 pip 也能读；再跑标准库测试、回算 README、重导 IFC 比对。
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: requirements files are ASCII
+        run: python scripts/check_ascii.py requirements*.txt
+      - name: venv with the bundled pip, then the README install command
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip --version
+          .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+      - name: Standard-library tests
+        run: .\.venv\Scripts\python.exe -m unittest tests.test_alignment tests.test_model tests.test_schedule tests.test_structure tests.test_replay tests.test_construction tests.test_construction_input tests.test_stage_results tests.test_plan_ages
+      - name: Every number in README and docs/ is recomputed from the artifacts
+        run: .\.venv\Scripts\python.exe scripts\check_readme.py
+      - name: IFC equals a fresh export
+        run: .\.venv\Scripts\python.exe scripts\export_ifc.py --check
