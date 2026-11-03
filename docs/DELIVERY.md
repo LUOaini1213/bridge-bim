@@ -32,8 +32,8 @@ Linux / macOS 上只有离线的两个入口（`--rebuild` 要 Windows 上的 Rh
 `--revalidate` 用于只改了文档、测试、离线检查脚本、CI 或依赖清单注释的提交：不启动 Rhino，跑完全部离线检查，
 确认全部交付产物的 SHA256 与原生构建时一致，再把新的输入指纹追加到索引的 `revalidations` 里（原生构建记录不动）。
 只要改动碰到会进入原生构建的输入（`bridge/`、`rhino/`、施工输入 JSON、`quality/profile.json`、`scripts/run_*.py`、
-`build_data.py`、`export_ifc.py`、`check_ids.py`、`check_source.py`），它就拒绝并要求 `--rebuild`；`--check` 也按同一规则
-核对索引里每一次复核记录。
+`check_ids.py`、`check_source.py`），它就拒绝并要求 `--rebuild`；`--check` 也按同一规则核对索引里每一次复核记录。
+`build_data.py` 与 `export_ifc.py` 不在此列：Rhino 不运行它们，离线检查用它们重算 `data/` 与 IFC 并与已提交文件逐字节比对。
 
 ## 原生三维几何校核
 

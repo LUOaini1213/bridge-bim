@@ -26,9 +26,10 @@ ROOT = Path(__file__).resolve().parents[1]
 INDEX = "model/delivery_index.json"
 HASH_POLICY = "SHA256; text CRLF normalized to LF"
 # Inputs that feed the native Rhino build or a committed artifact. A change to any of them needs --rebuild.
+# scripts/build_data.py and scripts/export_ifc.py are deliberately absent: Rhino never runs them, and the
+# offline checks regenerate data/ and the IFC with them and compare against the committed files.
 NATIVE_INPUTS = ("bridge/*", "facade/*", "build/*", "rhino/*", "construction/*", "quality/*", "web/*", "textures/*",
-                 "model/*", "viewer.js", "index.html", "scripts/run_*.py", "scripts/build_data.py",
-                 "scripts/export_ifc.py", "scripts/check_ids.py", "scripts/check_source.py")
+                 "model/*", "viewer.js", "index.html", "scripts/run_*.py", "scripts/check_ids.py", "scripts/check_source.py")
 TEXT_SUFFIXES = {".py", ".md", ".json", ".csv", ".ifc", ".txt", ".yml", ".yaml", ".html", ".js", ".css", ".xml", ".ids", ".bat"}
 
 

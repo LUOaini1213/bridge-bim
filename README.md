@@ -540,7 +540,8 @@ python scripts/mutation_drill.py          # 变异演练：把求解器改错一
 
 CI 跑三组：`bridge/` 只用标准库、兼容 Python 3.9（Rhino 8 内置的 CPython 就是 3.9，建模脚本 import 同一份代码），
 先单独跑一遍不装任何依赖的测试；再在 Ubuntu 上装 ifcopenshell、rhino3dm 与 openseespy 跑全部 268 个测试、重导 IFC 比对、回算 README；
-Windows 上按上面的 PowerShell 命令（不升级 pip）装依赖，跑标准库测试、回算 README、重导 IFC 比对。
+Windows 上按上面的 PowerShell 命令（不升级 pip）装依赖，跑标准库测试、重算 data/ 比对、回算 README、重导 IFC 比对
+（英文区域的 cp1252 控制台也要能打印中文结果）。
 OpenSeesPy 只在测试里用，拿来互核自写的求解器（它的许可对研究、教学与内部使用免费）。
 Rhino 那一步在本机跑，它的产物 `model/bridge_bim.3dm` 由 rhino3dm 独立读回来核。
 
