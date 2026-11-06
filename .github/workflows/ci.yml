@@ -82,7 +82,7 @@ jobs:
       - name: Standard-library tests
         run: .\.venv\Scripts\python.exe -m unittest tests.test_alignment tests.test_model tests.test_schedule tests.test_structure tests.test_replay tests.test_construction tests.test_construction_input tests.test_stage_results tests.test_plan_ages
       - name: data/ is exactly what the model computes
-        run: .\.venv\Scripts\python.exe scriptsuild_data.py --check
+        run: .\.venv\Scripts\python.exe scripts\build_data.py --check
       - name: Every number in README and docs/ is recomputed from the artifacts
         run: .\.venv\Scripts\python.exe scripts\check_readme.py
       - name: IFC equals a fresh export
