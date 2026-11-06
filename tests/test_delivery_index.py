@@ -99,5 +99,53 @@ class DeliveryIndexTests(unittest.TestCase):
         self.assertEqual(check.call_args.args[1], [["scripts/check_source.py", "--construction-config", "construction/input.json"]])
 
 
+    def test_documentation_only_change_is_revalidated_offline(self):
+        (self.root / "README.md").write_text("example, reworded\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "inputs/code.*--revalidate"):
+            delivery.verify_index(self.root, "facade")
+        with patch.object(delivery, "run") as checks:
+            delivery.revalidate(self.root)
+        self.assertEqual(checks.call_args.args[1], delivery.commands("facade"))
+        record = delivery.verify_index(self.root, "facade")
+        self.assertEqual(record["inputs"], self.record["inputs"])          # the native build record is untouched
+        (entry,) = record["revalidations"]
+        self.assertEqual((entry["state"], entry["native_rebuild"], entry["changed"]), ("passed", False, ["README.md"]))
+
+    def test_native_input_change_cannot_be_revalidated(self):
+        (self.root / "facade/config.py").write_text("JOINT=24\n", encoding="utf-8")
+        before = delivery.digest(self.root / delivery.INDEX)
+        with patch.object(delivery, "run") as checks:
+            with self.assertRaisesRegex(ValueError, "Native build inputs changed.*facade/config.py"):
+                delivery.revalidate(self.root)
+        checks.assert_not_called()
+        self.assertEqual(delivery.digest(self.root / delivery.INDEX), before)
+
+    def test_revalidation_rejects_a_changed_artifact(self):
+        (self.root / "README.md").write_text("example, reworded\n", encoding="utf-8")
+        (self.root / "model/facade_bim.3dm").write_text("modified source", encoding="utf-8")
+        with patch.object(delivery, "run"):
+            with self.assertRaisesRegex(ValueError, "artifacts"):
+                delivery.revalidate(self.root)
+
+    def test_offline_checks_that_rewrite_an_artifact_do_not_revalidate(self):
+        (self.root / "README.md").write_text("example, reworded\n", encoding="utf-8")
+        before = delivery.digest(self.root / delivery.INDEX)
+
+        def rewriting_checks(*args):
+            (self.root / "model/replay/facade_2026-12-20.json").write_text("other snapshot", encoding="utf-8")
+        with patch.object(delivery, "run", side_effect=rewriting_checks):
+            with self.assertRaisesRegex(ValueError, "artifacts"):
+                delivery.revalidate(self.root)
+        self.assertEqual(delivery.digest(self.root / delivery.INDEX), before)
+
+    def test_hand_written_revalidation_cannot_cover_a_native_change(self):
+        (self.root / "facade/config.py").write_text("JOINT=24\n", encoding="utf-8")
+        forged = dict(self.record, revalidations=[{"state": "passed", "native_rebuild": False,
+                                                   "inputs": delivery.inputs(self.root, "facade")}])
+        delivery.write_index(self.root, forged)
+        with self.assertRaisesRegex(ValueError, "changed native build inputs"):
+            delivery.verify_index(self.root, "facade")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -38,6 +38,24 @@ IFC_PATH = os.path.join(ROOT, "model", "bridge_bim.ifc")
 M3_PATH = os.path.join(ROOT, "model", "bridge_bim.3dm")
 
 
+def local_path_scan_targets():
+    """model/ 下所有 Rhino 写出的 .3dm 和 JSON/HTML 报告。"""
+    out = []
+    for pattern in ("*.3dm", "*.json", "*.html"):
+        out += [os.path.normpath(str(p)) for p in Path(ROOT, "model").rglob(pattern)]
+    return sorted(out)
+
+
+def local_path_leaks(b):
+    """字节里出现的本机路径痕迹（按 UTF-8 和两种字节对齐的 UTF-16 各解一遍）；只允许 C:/Users/Public。"""
+    leaks = []
+    for text in (b.decode("utf-8", "ignore"), b.decode("utf-16-le", "ignore"), b[1:].decode("utf-16-le", "ignore")):
+        leaks += [word for word in ("AppData", "Desktop") if word in text]
+        leaks += sorted(set(re.findall(r"[A-Za-z]:[\\/]Users[\\/]([^\\/\x00]+)", text)) - {"Public"})
+        leaks += re.findall(r"/home/[^/\x00]+/", text)
+    return leaks
+
+
 def rows(name):
     return list(csv.DictReader(open(os.path.join(ROOT, "data", name), encoding="utf-8")))
 
@@ -150,13 +168,23 @@ class Rhino3dm(unittest.TestCase):
 
     def test_no_local_paths_in_the_3dm(self):
         """.3dm 默认会写进本机存盘路径和渲染环境的贴图路径；公开仓库里不该有这些。
-        允许的只有 Windows 的公共目录（C:/Users/Public），构建脚本故意先存到那里再复制进仓库。"""
-        b = open(M3_PATH, "rb").read()
-        for text in (b.decode("utf-8", "ignore"), b.decode("utf-16-le", "ignore"), b[1:].decode("utf-16-le", "ignore")):
-            self.assertNotIn("AppData", text)
-            self.assertNotIn("Desktop", text)
-            users = set(re.findall(r"[A-Za-z]:[\\/]Users[\\/]([^\\/\x00]+)", text))
-            self.assertLessEqual(users, {"Public"}, users)
+        允许的只有 Windows 的公共目录（C:/Users/Public），构建脚本故意先存到那里再复制进仓库。
+        不只主模型：model/ 下每个 .3dm（回放、QA、project 快照）和 JSON/HTML 报告都由同一批 Rhino 运行写出。"""
+        paths = local_path_scan_targets()
+        self.assertIn(os.path.normpath(M3_PATH), paths)
+        self.assertGreaterEqual(sum(p.endswith(".3dm") for p in paths), 12)
+        for path in paths:
+            with self.subTest(path=os.path.relpath(path, ROOT)):
+                self.assertEqual(local_path_leaks(open(path, "rb").read()), [])
+
+    def test_local_path_scan_catches_an_injected_path(self):
+        """反例：往一段 .3dm 字节里塞本机路径（UTF-16 / UTF-8，两种字节对齐），扫描必须报出来。"""
+        clean = open(M3_PATH, "rb").read()[:65536]
+        self.assertEqual(local_path_leaks(clean), [])
+        for injected in ("C:\\Users\\someone\\model.3dm".encode("utf-16-le"), b"D:/Users/x/AppData/Local/env.hdr",
+                         "/home/someone/Desktop/bridge.3dm".encode("utf-8")):
+            self.assertNotEqual(local_path_leaks(clean + injected), [], injected)
+            self.assertNotEqual(local_path_leaks(clean + b"\x00" + injected), [], injected)
 
     def test_build_log_and_images(self):
         log = json.load(open(os.path.join(ROOT, "model", "build_log.json"), encoding="utf-8"))

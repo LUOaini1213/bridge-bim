@@ -77,6 +77,9 @@ def outputs():
 
 def main():
     import argparse
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")  # Chinese messages must not crash a cp1252 console
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--construction-config", help="validated construction input JSON")

@@ -2,8 +2,10 @@ ifcopenshell==0.8.5
 ifctester==0.8.5
 rhino3dm==8.32.0
 pytest==9.1.1
-# OpenSeesPy 只在测试里用，拿来互核自写的杆系求解器（其许可：研究、教学与内部使用免费）。
-# 3.7 起的平台包是按 Python 3.12 编的，所以平台包也钉死在 3.6.0.3。
+# OpenSeesPy is used only in tests, to cross-check the in-house frame solver
+# (its licence: free for research, education and internal use).
+# From 3.7 on the platform packages are built for Python 3.12, so the platform
+# packages are pinned to 3.6.0.3 as well.
 openseespy==3.6.0.3
 openseespywin==3.6.0.3; platform_system == "Windows"
 openseespylinux==3.6.0.3; platform_system == "Linux"

@@ -1,8 +1,9 @@
-"""README 里的每个数字，对着已提交的产物回算。
+"""README（以及 docs/ 里从 README 移出去的施工计划与交付说明）里的每个数字，对着已提交的产物回算。
 
 每条核对 = 一条在 README 里必须恰好命中一次的正则 + 一个从产物算出期望值的函数。
 写成阈值的句子（「差 < 1e-6」）核对的是：README 写的阈值等于测试里真正断言的那个阈值。
 最后断言核对条数等于 EXPECTED——改 README 时某句不再匹配，不会被静默跳过。
+核对的正文 = README.md + DOC_FILES（按顺序拼接），每条正则在整份正文里恰好命中一次。
 
     python scripts/check_readme.py
 """
@@ -28,9 +29,10 @@ import rhino3dm                # noqa: E402
 
 from bridge import alignment as AL, config as C, model as M, construction_input as CI, construction as CP   # noqa: E402
 
-EXPECTED = 217
+EXPECTED = 225
 README = ""  # Read selected prose/artifacts only after parsing CLI paths.
 DATA_DIR = Path(ROOT) / "data"
+DOC_FILES = ("CONSTRUCTION.md", "DELIVERY.md")   # docs/ 下随 README 一起核对的说明
 
 
 def rows(name):
@@ -41,10 +43,14 @@ def src(path):
     return open(os.path.join(ROOT, path), encoding="utf-8").read()
 
 
-def load_artifacts(data_dir, ifc_path, readme_path):
+def load_artifacts(data_dir, ifc_path, readme_path, docs_dir=None):
     global DATA_DIR, README, SUMMARY, CHECKS, GIRDERS, BEARINGS, TAKEOFF, SPECS, SPEC_SENS, SENS, CONV, ELEMENTS, IFC
-    global LATERAL, LINES, SECTIONS, REACTIONS, DESIGN, BSENS
-    DATA_DIR, README = Path(data_dir), Path(readme_path).read_text(encoding="utf-8")
+    global LATERAL, LINES, SECTIONS, REACTIONS, DESIGN, BSENS, TASKS
+    docs_dir = Path(docs_dir) if docs_dir is not None else Path(ROOT) / "docs"
+    DATA_DIR = Path(data_dir)
+    README = "\n\n".join([Path(readme_path).read_text(encoding="utf-8")] +
+                          [(docs_dir / name).read_text(encoding="utf-8") for name in DOC_FILES])
+    TASKS = rows("construction_tasks.csv")
     SUMMARY = json.loads((DATA_DIR / "summary.json").read_text(encoding="utf-8"))
     CHECKS = json.loads((DATA_DIR / "checks.json").read_text(encoding="utf-8"))
     GIRDERS = rows("girders.csv")
@@ -109,6 +115,26 @@ def validate_profile(configuration, saved_plan, summary, girders, task_rows):
             "calendar": cfg["calendar"], "tasks": len(expected["tasks"]), "held_tasks": expected["held_tasks"],
             "forecast_finish": expected["finish"], "effective_finish": expected["effective_finish"],
             "scope": "construction JSON/CSV, girder baseline and summary; default README/geometry/whole-line results checked separately"}
+
+
+def plan_age_claims():
+    """从已提交的 data/construction_tasks.csv 独立算完整示例计划下的支座龄期（与 structure.bearing_ages 同一定义，
+    整天）：伸缩端 = 该幅该联最年轻一片梁架设时的龄期；连续墩 = 浇墩顶连续段那天该联最年轻一片梁的龄期。
+    返回 (每联连续段比原基线晚几天的集合, 连续墩最小龄期, 伸缩端最小龄期)。"""
+    from datetime import datetime
+    day = lambda value: datetime.fromisoformat(value).date()
+    by_id = {t["id"]: t for t in TASKS}
+    cast, erect, unit = {}, {}, {}
+    for t in TASKS:
+        if t["class"] == "girder":
+            (pre,) = [p for p in t["predecessors"].split() if by_id[p]["class"] == "precast"]
+            cast[t["elements"]], erect[t["elements"]] = day(by_id[pre]["start"]), day(t["start"])
+            unit[t["elements"]] = (t["deck"], t["unit"])
+    cont = {(t["deck"], t["unit"]): day(t["start"]) for t in TASKS if t["class"] == "continuity"}
+    lag = {(cont[(r["deck"], r["unit"])] - day(r["continuity_cast"])).days for r in CONV}
+    cont_min = min((cont[unit[g]] - cast[g]).days for g in cast)
+    end_min = min((erect[g] - cast[g]).days for g in cast)
+    return lag, cont_min, end_min
 
 
 def n(s):
@@ -255,6 +281,7 @@ def main():
     parser.add_argument("--data-dir", default=str(DATA_DIR))
     parser.add_argument("--readme", default=str(Path(ROOT) / "README.md"))
     parser.add_argument("--ifc", default=str(Path(ROOT) / "model" / "bridge_bim.ifc"))
+    parser.add_argument("--docs-dir", default=str(Path(ROOT) / "docs"), help="folder holding " + ", ".join(DOC_FILES))
     args = parser.parse_args()
     settings = CI.load(args.construction_config)
     plan_path = Path(args.data_dir) / "construction_plan.json"
@@ -265,7 +292,7 @@ def main():
         return
     if saved_plan["configuration"] != settings or saved_plan["configuration_sha256"] != CI.fingerprint(settings):
         raise ValueError("README artifacts have a different construction input; rebuild first")
-    load_artifacts(Path(args.data_dir), Path(args.ifc), Path(args.readme))
+    load_artifacts(Path(args.data_dir), Path(args.ifc), Path(args.readme), Path(args.docs_dir))
     baseline, cal = settings["baseline"], settings["calendar"]
     cls = Counter(r["class"] for r in ELEMENTS)
     kinds = Counter(M.support_kind(k) for k in range(C.N_SPANS + 1))
@@ -293,6 +320,12 @@ def main():
     claim("摘要：构件与梁", r"(\d+) elements, (\d+) of them precast", [len(ELEMENTS), cls["girder"]])
     claim("摘要：梁长", r"(\d+) lengths instead of (\d+)", [SUMMARY["length_specs"], SUMMARY["length_specs_naive"]])
     claim("摘要：检查", r"(\d+) design, construction and structural checks", [len(CHECKS)])
+    claim("摘要：窄桥判别", r"test gives θ' = ([\d.]+) > ([\d.]+), so lateral distribution is also run by the G-M method",
+          ["%.3f" % SUMMARY["gm_theta"], test_const(S_STRUCT, r"THETA_NARROW = ([\d.]+)")])
+    claim("摘要：伸缩端缩短", r"expansion ends must shorten ([\d.]+) mm, beyond the thickest plain elastomeric bearing",
+          ["%.1f" % SUMMARY["end_contract_max_mm"]])
+    claim("摘要：OpenSees 互核", r"solver matches OpenSees to (1e-\d+);",
+          [test_const(T_STRUCT, r"self\.assertLess\(rel\(a, b\), (1e-\d+)\)")])
     # ---- 一眼看懂
     claim("总览：路线", r"路线 \*\*(\d+)\*\* m：直线 – 回旋线 – 圆曲线 R=\*\*(\d+)\*\* m – 回旋线 – 直线，竖曲线 R=\*\*(\d+)\*\* m，圆曲线段超高 \*\*(\d+)%\*\*",
           ["%d" % AL.LENGTH, "%d" % C.R_CURVE, "%d" % round(R_v), "%d" % round(C.SUPERELEVATION * 100)])
@@ -520,6 +553,34 @@ def main():
     claim("梁场图说明", r"存梁峰值日的梁场：台座上在制 (\d+) 片、存梁区 (\d+) 片",
           [min(baseline["n_beds"], sum(1 for g in GIRDERS if g["cast"] <= SUMMARY["storage_peak_day"] < g["to_storage"])),
            SUMMARY["storage_peak"]])
+    conv_tasks = [t for t in TASKS if t["class"] == "conversion"]
+    hour = lambda value: value.replace("T", " ")[:16]
+    plan_conv, plan_finish = hour(max(t["finish"] for t in conv_tasks)), hour(max(t["finish"] for t in TASKS))
+    claim("总览：完整计划", r"体系转换顺延到 \*\*([\d-]+ [\d:]+)\*\*、收尾 \*\*([\d-]+ [\d:]+)\*\*", [plan_conv, plan_finish])
+    lag, cont_min, end_min = plan_age_claims()
+    claim("龄期对照", r"原基线表（连续墩最小 (\d+) d），不是 IFC 里的完整计划。完整计划每联的墩顶连续段都晚 \*\*(\d+)\*\* 天浇，\s*\n"
+          r"连续墩支座开始受力时最小龄期是 \*\*(\d+)\*\* d，伸缩端架设龄期不变（最小 \*\*(\d+)\*\* d）",
+          [SUMMARY["age_cont_min"], sorted(lag)[0] if len(lag) == 1 else sorted(lag), cont_min, end_min])
+    if end_min != SUMMARY["age_end_min"] or not cont_min > SUMMARY["age_cont_min"] or min(lag) <= 0:
+        failures.append("龄期对照：README 说完整计划架设龄期不变、连续段更晚（偏安全），产物里不是这样")
+    # ---- docs/CONSTRUCTION.md 与 docs/DELIVERY.md
+    dur = settings["durations"]
+    claim("施工计划：工序工时", r"默认横隔板、湿接缝、翼缘每跨各施工 (\d+) h、养护 (\d+) h；铺装、护栏每联各施工 (\d+) h、养护 (\d+) h；\s*\n"
+          r"伸缩装置每个施工 (\d+) h，转换作业 (\d+) h；连续段施工 (\d+) h、养护 (\d+) h。",
+          ["%g" % dur["diaphragm"]["work_hours"], "%g" % dur["diaphragm"]["cure_hours"],
+           "%g" % dur["pavement"]["work_hours"], "%g" % dur["pavement"]["cure_hours"],
+           "%g" % dur["expansion_joint"]["work_hours"], "%g" % dur["conversion"]["work_hours"],
+           "%g" % dur["continuity"]["work_hours"], "%g" % dur["continuity"]["cure_hours"]])
+    for a, b in (("diaphragm", "wet_joint"), ("diaphragm", "cantilever"), ("pavement", "barrier")):
+        if dur[a] != dur[b]:
+            failures.append("施工计划：docs 把 %s 与 %s 写成同一工时，输入里不是这样" % (a, b))
+    claim("施工计划：转换与收尾", r"默认全部体系转换顺延至 \*\*([\d-]+ [\d:]+)\*\*，后续收尾至 \*\*([\d-]+ [\d:]+)\*\*",
+          [plan_conv, plan_finish])
+    spatial = json.loads((Path(ROOT) / "model" / "quality" / "native_spatial.json").read_text(encoding="utf-8"))["spatial"]
+    claim("空间校核结果", r"结果：(\d+) 片梁、(\d+) 对候选，实体相交 \*\*(\d+)\*\* 处、净距或接触事件 \*\*(\d+)\*\* 处、未决 \*\*(\d+)\*\* 处"
+          r"（默认净距 (\d+) mm）",
+          [spatial["units"], spatial["candidate_pairs"], len(spatial["clashes"]), len(spatial["clearance_events"]),
+           len(spatial["unresolved"]), "%g" % spatial["clearance_mm"]])
     # ---- IFC
     claim("IFC 桥梁分部", r"共 (\d+) 个 IfcBridgePart", [len(IFC.by_type("IfcBridgePart"))])
     claim("IFC 切割与面集", r"共 (\d+) 个切割；其余多面体是 IfcPolygonalFaceSet（(\d+) 个",
@@ -570,7 +631,7 @@ def main():
         for f in failures:
             print("MISMATCH", f)
         sys.exit(1)
-    print("PASS README 的 %d 处数字全部与产物一致" % checked[0])
+    print("PASS README 与 docs/ 的 %d 处数字全部与产物一致" % checked[0])
 
 
 if __name__ == "__main__":
